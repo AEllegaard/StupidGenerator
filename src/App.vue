@@ -33,14 +33,14 @@ const canvasDimensions = [
 const assets = [
   { name: 'Circle', path: '/Assets/Circle.svg', snapType: 'intersection' }, // snaps to grid intersections
   { name: 'Corner', path: '/Assets/Corner.svg', snapType: 'corner', offsetY: -0.001 }, // snaps to cell corners
+  { name: 'Quarter Circle', path: '/Assets/Quarter_circle.svg', snapType: 'corner' },
   {
     name: 'Half Circle',
     path: '/Assets/Half_circle.svg',
     snapType: 'edge',
-    offsetX: 0.49,
+    //offsetX: 0.49,
     offsetY: -0.001,
   }, // snaps to cell edges; offsetX = fraction of asset width
-  { name: 'Quarter Circle', path: '/Assets/Quarter_circle.svg', snapType: 'corner' },
   {
     name: 'Star',
     path: '/Assets/Star.svg',
@@ -223,11 +223,85 @@ const gridCells = computed(() => {
   return Array.from({ length: gridColumns.value * gridRows.value }, (_, i) => i)
 })
 
+// Helper: compute snapped anchor (in canvas pixels) for a given pointer position
+const computeSnapFromPointer = (pointerX, pointerY, snapType, canvasWidth, canvasHeight) => {
+  // Derive on-screen square cell size from the rendered canvas width so the
+  // snapping grid matches what the user sees. Avoid using preset-derived
+  // gridRows which may be based on different units.
+  const cellWidth = canvasWidth / gridColumns.value
+  const cellHeight = cellWidth
+
+  let snappedX = pointerX
+  let snappedY = pointerY
+
+  if (snapType === 'intersection') {
+    snappedX = Math.round(pointerX / cellWidth) * cellWidth
+    snappedY = Math.round(pointerY / cellHeight) * cellHeight
+  } else if (snapType === 'edge') {
+    const leftEdge = Math.floor(pointerX / cellWidth) * cellWidth
+    const rightEdge = Math.ceil(pointerX / cellWidth) * cellWidth
+    const topEdge = Math.floor(pointerY / cellHeight) * cellHeight
+    const bottomEdge = Math.ceil(pointerY / cellHeight) * cellHeight
+    const midpoints = [
+      { x: (leftEdge + rightEdge) / 2, y: topEdge },
+      { x: (leftEdge + rightEdge) / 2, y: bottomEdge },
+      { x: leftEdge, y: (topEdge + bottomEdge) / 2 },
+      { x: rightEdge, y: (topEdge + bottomEdge) / 2 },
+    ]
+    let minDistance = Infinity
+    let closestMid = midpoints[0]
+    midpoints.forEach((pt) => {
+      const distance = Math.hypot(pointerX - pt.x, pointerY - pt.y)
+      if (distance < minDistance) {
+        minDistance = distance
+        closestMid = pt
+      }
+    })
+    snappedX = closestMid.x
+    snappedY = closestMid.y
+  } else {
+    const leftEdge = Math.floor(pointerX / cellWidth) * cellWidth
+    const rightEdge = Math.ceil(pointerX / cellWidth) * cellWidth
+    const topEdge = Math.floor(pointerY / cellHeight) * cellHeight
+    const bottomEdge = Math.ceil(pointerY / cellHeight) * cellHeight
+    const corners = [
+      { x: leftEdge, y: topEdge },
+      { x: rightEdge, y: topEdge },
+      { x: leftEdge, y: bottomEdge },
+      { x: rightEdge, y: bottomEdge },
+    ]
+    let minDistance = Infinity
+    let closestCorner = corners[0]
+    corners.forEach((corner) => {
+      const distance = Math.hypot(pointerX - corner.x, pointerY - corner.y)
+      if (distance < minDistance) {
+        minDistance = distance
+        closestCorner = corner
+      }
+    })
+    snappedX = closestCorner.x
+    snappedY = closestCorner.y
+  }
+
+  return { x: snappedX, y: snappedY }
+}
+
 // Drag and drop functions
 const startDrag = (asset, event) => {
   draggedAsset.value = asset
   event.dataTransfer.effectAllowed = 'copy'
   event.dataTransfer.setData('text/plain', asset.name)
+  // show trash while dragging from palette
+  trashVisible.value = true
+  draggedOverTrash.value = false
+}
+
+const onDragEnd = (event) => {
+  // hide trash when palette drag ends (drop or cancel)
+  trashVisible.value = false
+  draggedOverTrash.value = false
+  // clear draggedAsset (drop handlers will handle placement)
+  draggedAsset.value = null
 }
 
 const onDragOver = (event) => {
@@ -317,17 +391,18 @@ const onDrop = (event) => {
     snappedY = closestCorner.y
   }
 
-  // Adjust placement for snap types:
-  // - 'intersection' and 'edge' keep the snap point as the visual center (CSS centers elements)
-  // - 'corner' should place the asset so its top-left corner sits in the cell corner.
-  // Compute final top-left coordinates for dropped asset using top-left positioning:
-  // - corner: top-left = snapped corner
-  // - intersection/edge: top-left = snapped point - half asset (to center the asset on the point)
+  // Adjust placement for snap types.
+  // Use a consistent rule: the snap anchor represents the visual center of the
+  // logical snap point. We align the asset's center to that anchor by default
+  // (this matches how elements are visually centered using CSS mask). This
+  // keeps intersection/edge/corner behavior consistent. Per-asset fractional
+  // offsets are then applied on top.
   const dropOffsetX = (draggedAsset.value.offsetX || 0) * assetSize.value
   const dropOffsetY = (draggedAsset.value.offsetY || 0) * assetSize.value
 
-  let finalX = draggedAsset.value.snapType === 'corner' ? snappedX : snappedX - assetSize.value / 2
-  let finalY = draggedAsset.value.snapType === 'corner' ? snappedY : snappedY - assetSize.value / 2
+  // Compute top-left so the asset is centered on the snap anchor.
+  let finalX = snappedX - assetSize.value / 2
+  let finalY = snappedY - assetSize.value / 2
 
   // Apply asset-specific offsets (fractions of asset size)
   finalX += dropOffsetX
@@ -363,8 +438,70 @@ const onDrop = (event) => {
     rotation: 0,
     id: Date.now(),
   })
+  // hide trash after a successful drop on canvas
+  trashVisible.value = false
+  draggedOverTrash.value = false
 
   draggedAsset.value = null
+}
+
+// Spawn an asset at the visual center of the canvas. This respects the
+// asset's snapType by computing a snap anchor at the canvas center and then
+// centering the asset on that anchor (plus any per-asset fractional offsets).
+const spawnAssetCentered = (asset) => {
+  if (!canvasRef.value) return
+  try {
+    const canvasRect = canvasRef.value.getBoundingClientRect()
+    const canvasWidth = canvasRect.width
+    const canvasHeight = canvasRect.height
+
+    // Center point in canvas coordinates
+    const centerX = canvasWidth / 2
+    const centerY = canvasHeight / 2
+
+    // Compute snap anchor using the helper so corner/edge/intersection
+    // behavior matches dropping via pointer.
+    const snapAnchor = computeSnapFromPointer(
+      centerX,
+      centerY,
+      asset.snapType,
+      canvasWidth,
+      canvasHeight,
+    )
+
+    const dropOffsetX = (asset.offsetX || 0) * assetSize.value
+    const dropOffsetY = (asset.offsetY || 0) * assetSize.value
+
+    // Align the asset center to the snap anchor (consistent with drop logic)
+    let finalX = Math.round(snapAnchor.x - assetSize.value / 2 + dropOffsetX)
+    let finalY = Math.round(snapAnchor.y - assetSize.value / 2 + dropOffsetY)
+
+    // Clamp so the asset remains at least partially visible inside canvas
+    finalX = Math.max(0, Math.min(finalX, canvasWidth - assetSize.value))
+    finalY = Math.max(0, Math.min(finalY, canvasHeight - assetSize.value))
+
+    pushHistory()
+    placedAssets.value.push({ ...asset, x: finalX, y: finalY, rotation: 0, id: Date.now() })
+  } catch (e) {
+    console.debug('spawnAssetCentered failed', e)
+  }
+}
+
+// Trash drag/drop handlers (for palette HTML5 drags)
+const onTrashDragOver = (e) => {
+  e.preventDefault()
+}
+
+const onTrashDragLeave = (e) => {
+  // no-op; we rely on dragend to hide the trash
+}
+
+const onTrashDrop = (e) => {
+  e.preventDefault()
+  // Dropped a palette asset onto trash -> do nothing (don't add to canvas)
+  draggedAsset.value = null
+  trashVisible.value = false
+  draggedOverTrash.value = false
 }
 
 // Move existing assets
@@ -373,23 +510,48 @@ const dragOffset = ref({ x: 0, y: 0 })
 const lastSnap = ref({ x: 0, y: 0 })
 const draggedDuringInteraction = ref(false)
 const justDragged = ref(false)
+const trashRef = ref(null)
+const trashVisible = ref(false)
+const draggedOverTrash = ref(false)
+const draggedElement = ref(null) // store the actual DOM element being dragged
+const _globalMoveHandler = { fn: null }
+const _globalUpHandler = { fn: null }
+const moveListenersAdded = ref(false)
+const dragActive = ref(false)
 
-const startMovingAsset = (asset, event) => {
+const startMovingAsset = (asset, event, el = null) => {
   draggedPlacedAsset.value = asset
 
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const mouseX = event.clientX - canvasRect.left
   const mouseY = event.clientY - canvasRect.top
 
-  // Compute the asset's un-offset top-left position so dragging doesn't jump.
-  // Stored asset.x/y are top-left final positions (including offsets). To get the
-  // base top-left (without offsets) we subtract any configured offsets.
-  // Use the stored top-left asset.x/asset.y as the base so dragging doesn't jump.
-  // asset.x/asset.y already include previously-applied offsets, so we should
-  // not subtract offsets here.
-  dragOffset.value = {
-    x: mouseX - asset.x,
-    y: mouseY - asset.y,
+  // Prefer computing drag offset from the element's actual bounding rect
+  // (accounts for SVG viewBox, internal padding, rotation, mask centering).
+  // Fallback to using stored asset.x/asset.y if element rect isn't provided.
+  try {
+    if (el && el.getBoundingClientRect) {
+      const elRect = el.getBoundingClientRect()
+      const elLeftRel = elRect.left - canvasRect.left
+      const elTopRel = elRect.top - canvasRect.top
+      dragOffset.value = {
+        x: mouseX - elLeftRel,
+        y: mouseY - elTopRel,
+      }
+      // keep a reference to the DOM element so we can compute its real bbox during drag
+      draggedElement.value = el
+    } else {
+      dragOffset.value = {
+        x: mouseX - asset.x,
+        y: mouseY - asset.y,
+      }
+    }
+  } catch (e) {
+    // if anything goes wrong, fall back to the previous calculation
+    dragOffset.value = {
+      x: mouseX - asset.x,
+      y: mouseY - asset.y,
+    }
   }
   draggedDuringInteraction.value = false
   console.debug('startMovingAsset:', {
@@ -399,7 +561,58 @@ const startMovingAsset = (asset, event) => {
     offsetX: asset.offsetX,
     offsetY: asset.offsetY,
     assetSize: assetSize.value,
+    dragOffset: dragOffset.value,
   })
+  // show trash while moving an existing asset
+  trashVisible.value = true
+  draggedOverTrash.value = false
+  // indicate active drag so canvas can allow overflow
+  dragActive.value = true
+  // attach global listeners so we can continue dragging outside the canvas
+  if (!moveListenersAdded.value) {
+    _globalMoveHandler.fn = (e) => onCanvasMouseMove(e)
+    _globalUpHandler.fn = (e) => onCanvasMouseUp(e)
+    window.addEventListener('mousemove', _globalMoveHandler.fn)
+    window.addEventListener('mouseup', _globalUpHandler.fn)
+    moveListenersAdded.value = true
+  }
+}
+
+// Delegated mousedown handler on the assets-layer so every placed asset is draggable
+const onAssetsLayerMouseDown = (event) => {
+  const el = event.target.closest && event.target.closest('.placed-asset-shape')
+  if (!el) return
+  const id = el.dataset && el.dataset.id
+  if (!id) return
+  const found = placedAssets.value.find((a) => String(a.id) === String(id))
+  if (!found) return
+  // Debug/logging: show coordinates and element rect to diagnose offset issues
+  try {
+    const canvasRect = canvasRef.value
+      ? canvasRef.value.getBoundingClientRect()
+      : { left: 0, top: 0 }
+    const elRect = el.getBoundingClientRect()
+    console.debug('onAssetsLayerMouseDown:', {
+      id,
+      name: found.name,
+      eventClientX: event.clientX,
+      eventClientY: event.clientY,
+      canvasLeft: canvasRect.left,
+      canvasTop: canvasRect.top,
+      elLeft: elRect.left,
+      elTop: elRect.top,
+      assetX: found.x,
+      assetY: found.y,
+    })
+  } catch (e) {
+    console.debug('onAssetsLayerMouseDown debug failed', e)
+  }
+
+  // Delegate to startMovingAsset with the original mouse event and the
+  // actual element so we can compute a pixel-accurate drag offset.
+  startMovingAsset(found, event, el)
+  // prevent text selection / default drag behaviour
+  event.preventDefault()
 }
 
 const onCanvasMouseMove = (event) => {
@@ -412,145 +625,335 @@ const onCanvasMouseMove = (event) => {
   const canvasWidth = canvasRect.width
   const canvasHeight = canvasRect.height
 
-  // Get mouse position relative to canvas
-  const x = event.clientX - canvasRect.left - dragOffset.value.x
-  const y = event.clientY - canvasRect.top - dragOffset.value.y
+  // Get mouse position relative to canvas and compute the raw (unsnapped)
+  // desired top-left for the asset so it follows the cursor exactly.
+  const rawX = event.clientX - canvasRect.left - dragOffset.value.x
+  const rawY = event.clientY - canvasRect.top - dragOffset.value.y
 
-  // Calculate cell dimensions in pixels
+  // Calculate cell dimensions in pixels (use on-screen square cells).
+  // Use the rendered canvas width to derive the cell width; keep cells
+  // square by making height equal to width. This avoids mixing preset-based
+  // sizes with rendered sizes which caused snapping mismatches.
   const cellWidth = canvasWidth / gridColumns.value
-  const cellHeight = canvasHeight / gridRows.value
+  const cellHeight = cellWidth
 
+  // Compute the snapped anchor for the pointer position but do NOT apply it
+  // to the live display. We save it in lastSnap so snapping can be applied on
+  // mouseup (this preserves pointer alignment during drag and prevents
+  // visual jumps for assets with odd viewBoxes like the Star).
   let snappedX, snappedY
-
   if (draggedPlacedAsset.value.snapType === 'intersection') {
-    // Snap to grid intersections
-    snappedX = Math.round(x / cellWidth) * cellWidth
-    snappedY = Math.round(y / cellHeight) * cellHeight
+    snappedX = Math.round((rawX + dragOffset.value.x) / cellWidth) * cellWidth
+    snappedY = Math.round((rawY + dragOffset.value.y) / cellHeight) * cellHeight
   } else if (draggedPlacedAsset.value.snapType === 'edge') {
-    // Snap to nearest edge midpoint of the current cell
-    const leftEdge = Math.floor(x / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(x / cellWidth) * cellWidth
-    const topEdge = Math.floor(y / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(y / cellHeight) * cellHeight
-
+    const px = rawX + dragOffset.value.x
+    const py = rawY + dragOffset.value.y
+    const leftEdge = Math.floor(px / cellWidth) * cellWidth
+    const rightEdge = Math.ceil(px / cellWidth) * cellWidth
+    const topEdge = Math.floor(py / cellHeight) * cellHeight
+    const bottomEdge = Math.ceil(py / cellHeight) * cellHeight
     const midpoints = [
-      { x: (leftEdge + rightEdge) / 2, y: topEdge }, // top middle
-      { x: (leftEdge + rightEdge) / 2, y: bottomEdge }, // bottom middle
-      { x: leftEdge, y: (topEdge + bottomEdge) / 2 }, // left middle
-      { x: rightEdge, y: (topEdge + bottomEdge) / 2 }, // right middle
+      { x: (leftEdge + rightEdge) / 2, y: topEdge },
+      { x: (leftEdge + rightEdge) / 2, y: bottomEdge },
+      { x: leftEdge, y: (topEdge + bottomEdge) / 2 },
+      { x: rightEdge, y: (topEdge + bottomEdge) / 2 },
     ]
-
-    // Find the closest midpoint
     let minDistance = Infinity
     let closestMid = midpoints[0]
-
     midpoints.forEach((pt) => {
-      const distance = Math.hypot(x - pt.x, y - pt.y)
+      const distance = Math.hypot(px - pt.x, py - pt.y)
       if (distance < minDistance) {
         minDistance = distance
         closestMid = pt
       }
     })
-
     snappedX = closestMid.x
     snappedY = closestMid.y
   } else {
-    // Snap to cell corners (edge of individual cells)
-    const leftEdge = Math.floor(x / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(x / cellWidth) * cellWidth
-    const topEdge = Math.floor(y / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(y / cellHeight) * cellHeight
-
-    // Calculate distances to all four corners of the current cell
+    const px = rawX + dragOffset.value.x
+    const py = rawY + dragOffset.value.y
+    const leftEdge = Math.floor(px / cellWidth) * cellWidth
+    const rightEdge = Math.ceil(px / cellWidth) * cellWidth
+    const topEdge = Math.floor(py / cellHeight) * cellHeight
+    const bottomEdge = Math.ceil(py / cellHeight) * cellHeight
     const corners = [
       { x: leftEdge, y: topEdge },
       { x: rightEdge, y: topEdge },
       { x: leftEdge, y: bottomEdge },
       { x: rightEdge, y: bottomEdge },
     ]
-
-    // Find the closest corner
     let minDistance = Infinity
     let closestCorner = corners[0]
-
     corners.forEach((corner) => {
-      const distance = Math.hypot(x - corner.x, y - corner.y)
+      const distance = Math.hypot(px - corner.x, py - corner.y)
       if (distance < minDistance) {
         minDistance = distance
         closestCorner = corner
       }
     })
-
     snappedX = closestCorner.x
     snappedY = closestCorner.y
   }
 
-  // While dragging we DO NOT apply asset-specific offsets or the 'corner' visual shift.
-  // Store the last snapped intersection/corner/edge so we can apply offsets on drop.
-  lastSnap.value = { x: snappedX, y: snappedY }
+  // Store snapped anchor for drop-time application
+  // Clamp snapped anchor to canvas bounds so out-of-canvas pointers don't
+  // produce anchors outside the visible grid (helps when dragging slightly
+  // outside the canvas to the left/top/right/bottom).
+  const clampedSnappedX = Math.max(0, Math.min(snappedX, canvasWidth))
+  const clampedSnappedY = Math.max(0, Math.min(snappedY, canvasHeight))
+  lastSnap.value = { x: clampedSnappedX, y: clampedSnappedY }
 
-  // Debug info (temporary): show move snap calculations in console (base snap)
-  console.debug('onMove:', {
-    name: draggedPlacedAsset.value.name,
-    snapType: draggedPlacedAsset.value.snapType,
-    snappedX,
-    snappedY,
-    assetSize: assetSize.value,
-    offsetX: draggedPlacedAsset.value.offsetX,
-    offsetY: draggedPlacedAsset.value.offsetY,
-  })
+  // Extended debug info (temporary) to help diagnose snapping issues
+  try {
+    const px = rawX + (dragOffset.value.x || 0)
+    const py = rawY + (dragOffset.value.y || 0)
+    console.debug('onMove-debug:', {
+      name: draggedPlacedAsset.value.name,
+      snapType: draggedPlacedAsset.value.snapType,
+      canvasWidth,
+      canvasHeight,
+      gridColumns: gridColumns.value,
+      gridRows: gridRows.value,
+      cellWidth,
+      cellHeight,
+      rawX,
+      rawY,
+      px,
+      py,
+      dragOffset: dragOffset.value,
+      snappedX,
+      snappedY,
+      assetSize: assetSize.value,
+      offsetX: draggedPlacedAsset.value.offsetX,
+      offsetY: draggedPlacedAsset.value.offsetY,
+    })
+  } catch (e) {
+    console.debug('onMove-debug failed', e)
+  }
 
-  // Update the asset to the snapped base top-left position (no final offsets yet)
-  let displayX =
-    draggedPlacedAsset.value.snapType === 'corner' ? snappedX : snappedX - assetSize.value / 2
-  let displayY =
-    draggedPlacedAsset.value.snapType === 'corner' ? snappedY : snappedY - assetSize.value / 2
+  // Live display follows the raw pointer-based position so the cursor stays
+  // locked to the same visual point on the asset while dragging.
+  let displayX = rawX
+  let displayY = rawY
 
-  // If this asset has a configured visual offset (e.g. Half Circle offsetX),
-  // apply it visually during drag so the movement feels natural. The true
-  // offset is still applied on mouseup.
+  // Apply visual per-asset offsets during drag for natural feel (still not
+  // overriding pointer alignment)
   if (draggedPlacedAsset.value.offsetX)
     displayX += (draggedPlacedAsset.value.offsetX || 0) * assetSize.value
   if (draggedPlacedAsset.value.offsetY)
     displayY += (draggedPlacedAsset.value.offsetY || 0) * assetSize.value
 
-  // Round and clamp display position to avoid sub-pixel values and tiny negatives
+  // Round display position (do NOT clamp here so the asset can be dragged outside the canvas)
   displayX = Math.round(displayX)
   displayY = Math.round(displayY)
-  displayX = Math.max(0, Math.min(displayX, canvasWidth - assetSize.value))
-  displayY = Math.max(0, Math.min(displayY, canvasHeight - assetSize.value))
 
   draggedPlacedAsset.value.x = displayX
   draggedPlacedAsset.value.y = displayY
+
+  // Check intersection with trash while dragging a placed asset
+  if (trashRef.value) {
+    const trashRect = trashRef.value.getBoundingClientRect()
+
+    // Prefer using the actual element rect if available (handles transforms,
+    // masks, and any visual differences between model coords and rendered box).
+    let assetRect
+    try {
+      if (draggedElement.value && draggedElement.value.getBoundingClientRect) {
+        const elRect = draggedElement.value.getBoundingClientRect()
+        assetRect = {
+          left: elRect.left,
+          top: elRect.top,
+          right: elRect.right,
+          bottom: elRect.bottom,
+        }
+      } else {
+        assetRect = {
+          left: canvasRect.left + displayX,
+          top: canvasRect.top + displayY,
+          right: canvasRect.left + displayX + assetSize.value,
+          bottom: canvasRect.top + displayY + assetSize.value,
+        }
+      }
+    } catch (e) {
+      assetRect = {
+        left: canvasRect.left + displayX,
+        top: canvasRect.top + displayY,
+        right: canvasRect.left + displayX + assetSize.value,
+        bottom: canvasRect.top + displayY + assetSize.value,
+      }
+    }
+
+    const intersects = !(
+      assetRect.right < trashRect.left ||
+      assetRect.left > trashRect.right ||
+      assetRect.bottom < trashRect.top ||
+      assetRect.top > trashRect.bottom
+    )
+    draggedOverTrash.value = intersects
+    console.debug('trash-check:', { assetRect, trashRect, intersects })
+  }
 }
 
-const onCanvasMouseUp = () => {
+const onCanvasMouseUp = (event) => {
   // When finishing a drag, apply offsets (if any) and the 'corner' correction to the final position
   if (draggedPlacedAsset.value) {
+    // Only delete if the POINTER is over the trash button at mouseup.
+    // This avoids deleting when the asset's visual bbox overlaps the trash but
+    // the user didn't actually release the mouse over the trash control.
+    if (event && trashRef.value) {
+      try {
+        const tRect = trashRef.value.getBoundingClientRect()
+        const px = event.clientX
+        const py = event.clientY
+        const pointerOverTrash =
+          px >= tRect.left && px <= tRect.right && py >= tRect.top && py <= tRect.bottom
+        // update visual flag for consistency
+        draggedOverTrash.value = pointerOverTrash
+        if (pointerOverTrash) {
+          // record previous state so undo can revert the deletion
+          pushHistory()
+          const idToRemove = draggedPlacedAsset.value.id
+          const idx = placedAssets.value.findIndex((a) => a.id === idToRemove)
+          if (idx !== -1) placedAssets.value.splice(idx, 1)
+          // hide trash and reset flags
+          draggedPlacedAsset.value = null
+          draggedOverTrash.value = false
+          trashVisible.value = false
+          return
+        }
+      } catch (e) {
+        console.debug('trash pointer check failed', e)
+      }
+    }
     const asset = draggedPlacedAsset.value
-    // Compute top-left final position using top-left coordinate system
-    let finalX =
-      asset.snapType === 'corner' ? lastSnap.value.x : lastSnap.value.x - assetSize.value / 2
-    let finalY =
-      asset.snapType === 'corner' ? lastSnap.value.y : lastSnap.value.y - assetSize.value / 2
+    // Prefer snapping to the last computed snap anchor (from lastSnap) so the
+    // final placement respects the snap mode. However, avoid large jumps that
+    // surprise the user: only apply snap if the snap displacement is within a
+    // reasonable tolerance (fraction of asset size). Otherwise keep the live
+    // dragged position.
+    let finalX, finalY
+    const displayX = asset.x
+    const displayY = asset.y
 
-    finalX += (asset.offsetX || 0) * assetSize.value
-    finalY += (asset.offsetY || 0) * assetSize.value
+    if (lastSnap.value && typeof lastSnap.value.x === 'number') {
+      const dropOffsetX = (asset.offsetX || 0) * assetSize.value
+      const dropOffsetY = (asset.offsetY || 0) * assetSize.value
 
-    // Round and clamp to canvas bounds to avoid tiny negative positions
+      // Recompute the snap anchor from the actual pointer for 'corner' snaps.
+      // Some SVGs have internal viewBox/mask offsets that make the element's
+      // bounding box differ from the pointer position; using the pointer to
+      // recompute the corner anchor avoids landing several cells away.
+      const canvasRectNow = canvasRef.value.getBoundingClientRect()
+      let pointerX = event ? event.clientX - canvasRectNow.left : null
+      let pointerY = event ? event.clientY - canvasRectNow.top : null
+      // Clamp pointer to canvas bounds for snap calculations so we don't
+      // accidentally snap to negative or out-of-range anchors when the
+      // cursor is slightly outside the canvas during drop.
+      if (pointerX !== null && pointerY !== null) {
+        pointerX = Math.max(0, Math.min(pointerX, canvasRectNow.width))
+        pointerY = Math.max(0, Math.min(pointerY, canvasRectNow.height))
+      }
+
+      let snapAnchor = lastSnap.value
+      if (asset.snapType === 'corner' && pointerX !== null && pointerY !== null) {
+        snapAnchor = computeSnapFromPointer(
+          pointerX,
+          pointerY,
+          asset.snapType,
+          canvasRectNow.width,
+          canvasRectNow.height,
+        )
+      }
+
+      // Treat snapAnchor as the visual center: align the asset center to it.
+      const snappedTopLeftX = snapAnchor.x - assetSize.value / 2
+      const snappedTopLeftY = snapAnchor.y - assetSize.value / 2
+      const candidateX = snappedTopLeftX + dropOffsetX
+      const candidateY = snappedTopLeftY + dropOffsetY
+
+      // Decide to snap based on how close the POINTER was to the snap anchor
+      // (not on how far the element would move). Use the recomputed snapAnchor
+      // when available so corner snaps are based on the pointer location.
+      let shouldSnap = false
+      let pointerDist = null
+      let moveDist = null
+      let snapTolerance = null
+      if (pointerX !== null && pointerY !== null) {
+        const dxp = pointerX - snapAnchor.x
+        const dyp = pointerY - snapAnchor.y
+        pointerDist = Math.hypot(dxp, dyp)
+        // tolerance: snap when pointer is reasonably close to the snap anchor
+        const cellWidthNow = canvasRectNow.width / gridColumns.value
+        snapTolerance = Math.max(
+          8,
+          Math.min(assetSize.value * 0.8, Math.max(cellWidthNow || 0, assetSize.value * 0.5)),
+        )
+        shouldSnap = pointerDist <= snapTolerance
+      } else {
+        // previous fallback: compare candidate vs display position
+        const dx = candidateX - displayX
+        const dy = candidateY - displayY
+        moveDist = Math.hypot(dx, dy)
+        snapTolerance = Math.max(8, assetSize.value * 0.6)
+        shouldSnap = moveDist <= snapTolerance
+      }
+
+      // Detailed drop-time debug to explain the snap decision
+      try {
+        console.debug('onDrop-debug:', {
+          name: asset.name,
+          pointerX,
+          pointerY,
+          lastSnap: lastSnap.value,
+          snapAnchor,
+          candidateX,
+          candidateY,
+          displayX,
+          displayY,
+          dropOffsetX,
+          dropOffsetY,
+          pointerDist,
+          moveDist,
+          snapTolerance,
+          shouldSnap,
+        })
+      } catch (e) {
+        console.debug('onDrop-debug failed', e)
+      }
+
+      if (shouldSnap) {
+        finalX = Math.round(candidateX)
+        finalY = Math.round(candidateY)
+      } else {
+        finalX = Math.round(displayX)
+        finalY = Math.round(displayY)
+      }
+    } else {
+      // No snap available — use live dragged position
+      finalX = Math.round(displayX)
+      finalY = Math.round(displayY)
+    }
+
+    // Allow assets to be partially outside the canvas (so they're clipped by the edge).
+    // Keep at least 1px visible inside the canvas to avoid fully losing the asset.
     const canvasRect = canvasRef.value.getBoundingClientRect()
     const canvasWidth = canvasRect.width
     const canvasHeight = canvasRect.height
-    finalX = Math.round(finalX)
-    finalY = Math.round(finalY)
-    finalX = Math.max(0, Math.min(finalX, canvasWidth - assetSize.value))
-    finalY = Math.max(0, Math.min(finalY, canvasHeight - assetSize.value))
+    const minX = -Math.floor(assetSize.value) + 1
+    const minY = -Math.floor(assetSize.value) + 1
+    const maxX = Math.max(1, canvasWidth - 1)
+    const maxY = Math.max(1, canvasHeight - 1)
+
+    finalX = Math.max(minX, Math.min(finalX, maxX))
+    finalY = Math.max(minY, Math.min(finalY, maxY))
 
     // record previous state before finalizing the move so undo can revert
     pushHistory()
 
     asset.x = finalX
     asset.y = finalY
+    // stop dragging-out mode
+    dragActive.value = false
     // if we moved the asset during this interaction, mark a short-lived flag
     if (draggedDuringInteraction.value) {
       justDragged.value = true
@@ -560,6 +963,23 @@ const onCanvasMouseUp = () => {
   }
 
   draggedPlacedAsset.value = null
+  // hide trash after interaction
+  trashVisible.value = false
+  draggedOverTrash.value = false
+  // clear stored element ref
+  draggedElement.value = null
+  // remove global listeners if added
+  if (moveListenersAdded.value) {
+    try {
+      if (_globalMoveHandler.fn) window.removeEventListener('mousemove', _globalMoveHandler.fn)
+      if (_globalUpHandler.fn) window.removeEventListener('mouseup', _globalUpHandler.fn)
+    } catch (e) {
+      console.warn('error removing global move listeners', e)
+    }
+    _globalMoveHandler.fn = null
+    _globalUpHandler.fn = null
+    moveListenersAdded.value = false
+  }
 }
 
 // Calculate asset size based on grid cell size
@@ -607,7 +1027,7 @@ const handlePresetChange = (event) => {
   <div class="w-full h-screen maingrid">
     <!-- UI Section -->
     <div class="bg-white m-1">
-      <h1 class="font-object font-bold text-lg ml-3 mt-1">Stupid Generator</h1>
+      <h1 class="font-object font-bold text-xl ml-3 mt-1">Stupid Generator</h1>
       <div class="ml-3 mt-8">
         <div class="font-object font-medium text-base">Canvas presets</div>
         <select
@@ -627,6 +1047,7 @@ const handlePresetChange = (event) => {
         </div>
 
         <h2 class="font-object font-medium text-base mt-10">Colors</h2>
+        <p class="font-object text-xs mb-2 text-gray-500">Click to change colors, and to invert.</p>
         <div class="color-presets">
           <button
             v-for="preset in colorPresets"
@@ -656,17 +1077,26 @@ const handlePresetChange = (event) => {
         </div>
 
         <h2 class="font-object font-medium text-base mt-10">Assets</h2>
-        <div class="assets-container grid grid-cols-4 w.">
+        <p class="font-object text-xs mb-2 text-gray-500">Click to spawn centered. Drag to move.</p>
+        <p class="font-object text-sm mb-2">Big</p>
+        <div class="assets-container grid grid-cols-4">
           <div
             v-for="asset in assets"
             :key="asset.name"
             draggable="true"
             @dragstart="startDrag(asset, $event)"
+            @dragend="onDragEnd"
+            @click.prevent="spawnAssetCentered(asset)"
             class="asset-button"
             :title="`Snap: ${asset.snapType}`"
           >
             <img :src="asset.path" :alt="asset.name" class="asset-icon" />
+            
           </div>
+          
+        </div>
+        <div>
+          <p class="font-object text-sm mt-4 mb-2 ">Small</p>
         </div>
       </div>
     </div>
@@ -677,6 +1107,7 @@ const handlePresetChange = (event) => {
         <div
           ref="canvasRef"
           :style="[canvasStyle, { backgroundColor: selectedBackgroundColor }]"
+          :class="{ 'dragging-out': dragActive }"
           class="canvas-preset"
           @dragover="onDragOver"
           @drop="onDrop"
@@ -689,12 +1120,13 @@ const handlePresetChange = (event) => {
           </div>
 
           <!-- Placed assets layer -->
-          <div class="assets-layer">
+          <div class="assets-layer" @mousedown="onAssetsLayerMouseDown($event)">
             <div
               v-for="asset in placedAssets"
               :key="asset.id"
               class="placed-asset-shape"
-              @mousedown="startMovingAsset(asset, $event)"
+              :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
+              :data-id="asset.id"
               @click="onAssetClick(asset, $event)"
               :style="{
                 left: `${asset.x}px`,
@@ -716,207 +1148,20 @@ const handlePresetChange = (event) => {
             />
           </div>
         </div>
+        <!-- Trash positioned absolutely inside canvas-wrapper so it doesn't affect layout -->
+        <div
+          ref="trashRef"
+          class="trash"
+          :class="{ visible: trashVisible, over: draggedOverTrash }"
+          @dragover.prevent="onTrashDragOver"
+          @dragleave="onTrashDragLeave"
+          @drop="onTrashDrop"
+        >
+          <img width="20px" src="/Icons/trash.svg" alt="" />
+        </div>
       </div>
     </div>
   </div>
 </template>
 
-<style scoped>
-.maingrid {
-  display: grid;
-  grid-template-columns: 0.5fr 2fr;
-}
-
-.slidercontainer {
-  width: 100%;
-}
-
-.slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 95%;
-  height: 4px;
-  background: #1e1c1c;
-  opacity: 0.8;
-  -webkit-transition: 0.2s; /* 0.2 seconds transition on hover */
-  transition: opacity 0.2s;
-  border-radius: 10px;
-}
-
-.slider:hover {
-  opacity: 1; /* Fully shown on mouse-over */
-}
-
-.slider::-webkit-slider-thumb {
-  -webkit-appearance: none; /* Override default look */
-  appearance: none;
-  width: 15px; /* Set a specific slider handle width */
-  height: 15px; /* Slider handle height */
-  border-radius: 100%;
-  background: #000000; /* Green background */
-  cursor: pointer; /* Cursor on hover */
-}
-
-.canvas {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f5f5f5;
-}
-
-.canvas-wrapper {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-}
-
-.canvas-preset {
-  background: white;
-  border: 2px solid #0000001f;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-  position: relative;
-  overflow: hidden;
-  padding: 0;
-}
-
-.grid-container {
-  /* Make the grid a non-destructive overlay */
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 5;
-  pointer-events: none; /* allow clicks to pass through to assets */
-}
-
-.grid-cell {
-  background: transparent; /* grid is just an overlay, not part of the canvas content */
-  border: 1px solid rgba(0, 0, 0, 0.06); /* very subtle lines */
-  transition: background-color 0.2s;
-  box-sizing: border-box;
-}
-
-.grid-cell:hover {
-  background: #e0e0e0;
-  cursor: pointer;
-}
-
-.assets-container {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  justify-items: center; /* center each button inside its grid cell */
-  gap: 12px;
-  margin-top: 8px;
-  width: 95%;
-}
-
-.color-presets {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.color-button {
-  width: 44px;
-  height: 44px;
-  padding: 4px;
-  border: 2px solid transparent;
-  background: transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.color-button.selected {
-  border-color: #000;
-}
-
-.invert-button {
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  border: 2px solid #ddd;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.invert-button:hover {
-  border-color: #000;
-}
-
-.color-swatch {
-  width: 100%;
-  height: 100%;
-  border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) inset;
-}
-
-.asset-button:hover {
-  cursor: grab;
-}
-
-.asset-button:active {
-  cursor: grabbing;
-}
-
-.asset-icon {
-  width: 40px; /* larger icon */
-  height: 40px;
-  object-fit: contain;
-}
-
-/* Force icons in the asset buttons to render as black.
-   This uses a CSS filter so it works even if the SVGs have baked-in colors.
-   If your SVGs use `fill="currentColor"` instead, you can remove the filter
-   and rely on `color: black` on the button. */
-.asset-button .asset-icon {
-  filter: grayscale(1) brightness(0);
-  opacity: 0.8; /* default 50% opacity */
-  transition:
-    opacity 150ms ease,
-    filter 150ms ease;
-}
-
-.asset-button:hover .asset-icon {
-  opacity: 1; /* full opacity on hover */
-  /* keep icons black on hover as well */
-  filter: grayscale(1) brightness(0);
-}
-
-.assets-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.placed-asset-shape {
-  position: absolute;
-  pointer-events: auto;
-  cursor: move;
-  user-select: none;
-  /* will use mask-image to color SVGs */
-  -webkit-mask-size: contain;
-  mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  mask-position: center;
-}
-
-.placed-asset-shape:active {
-  cursor: grabbing;
-}
-</style>
+<style scoped></style>
