@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --font-object: "Object", sans-serif;
+  --font-gt: "GT Era", sans-serif;
+  --color-red: #f0604d;
+  --color-rosa: #ff9698;
+  --color-beige: #fcf4ea;
+  --color-lightgreen: #7ad58e;
+  --color-darkgreen: #164230;
+  --color-ultraviolet: #322fb0;
+  --color-blue: #4055b2;
+}
+
+@font-face {
+  font-family: "Object";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/PPObject/PPObjectSans-Regular.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Object";
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/PPObject/PPObjectSans-Medium.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Object";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/PPObject/PPObjectSans-Bold.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Object";
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/PPObject/PPObjectSans-Heavy.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "GT Era";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/GT Era/GT-Era-Regular.otf") format("opentype");
+}
+@font-face {
+  font-family: "GT Era";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("/fonts/GT Era/GT-Era-Bold.otf") format("opentype");
+}
+
+body{
+  background-color: #f5f5f5;
+}
