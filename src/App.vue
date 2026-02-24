@@ -1021,6 +1021,10 @@ const handlePresetChange = (event) => {
     currentCanvasPreset.value = selectedPreset
   }
 }
+
+// Generator toggle state (controlled via Vue bindings)
+const generatorChecked = ref(false)
+const generatorLabel = computed(() => (generatorChecked.value ? 'Pattern Finder' : 'Sandbox'))
 </script>
 
 <template>
@@ -1028,6 +1032,18 @@ const handlePresetChange = (event) => {
     <!-- UI Section -->
     <div class="bg-white m-1">
       <h1 class="font-object font-bold text-xl ml-3 mt-1">Stupid Generator</h1>
+      <div class="ml-3 mt-4">
+        <div class="font-object font-medium text-base">Generator Type</div>
+        <div class="flex gap-4 items-center mt-2">
+          <input id="checkboxInput" type="checkbox" v-model="generatorChecked" />
+          <label
+            for="checkboxInput"
+            class="toggleSwitch"
+            @click.prevent="generatorChecked = !generatorChecked"
+          ></label>
+          <p id="generatorType">{{ generatorLabel }}</p>
+        </div>
+      </div>
       <div class="ml-3 mt-8">
         <div class="font-object font-medium text-base">Canvas presets</div>
         <select
@@ -1078,7 +1094,6 @@ const handlePresetChange = (event) => {
 
         <h2 class="font-object font-medium text-base mt-10">Assets</h2>
         <p class="font-object text-xs mb-2 text-gray-500">Click to spawn centered. Drag to move.</p>
-        <p class="font-object text-sm mb-2">Big</p>
         <div class="assets-container grid grid-cols-4">
           <div
             v-for="asset in assets"
@@ -1091,12 +1106,7 @@ const handlePresetChange = (event) => {
             :title="`Snap: ${asset.snapType}`"
           >
             <img :src="asset.path" :alt="asset.name" class="asset-icon" />
-            
           </div>
-          
-        </div>
-        <div>
-          <p class="font-object text-sm mt-4 mb-2 ">Small</p>
         </div>
       </div>
     </div>
