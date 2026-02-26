@@ -163,13 +163,13 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  z-index: 5;
+  z-index: 2;
   pointer-events: none; /* allow clicks to pass through to assets */
 }
 
 .grid-cell {
   background: transparent; /* grid is just an overlay, not part of the canvas content */
-  border: 1px solid rgba(0, 0, 0, 0.06); /* very subtle lines */
+  border: 1px solid rgba(0, 0, 0, 0.03); /* very subtle lines */
   transition: background-color 0.2s;
   box-sizing: border-box;
 }
@@ -256,7 +256,7 @@ body {
    This uses a CSS filter so it works even if the SVGs have baked-in colors.
    If your SVGs use `fill="currentColor"` instead, you can remove the filter
    and rely on `color: black` on the button. */
-.asset-button .asset-icon {
+.asset-button:not(.uploaded-thumb) .asset-icon {
   filter: grayscale(1) brightness(0);
   opacity: 0.8; /* default 50% opacity */
   transition:
@@ -264,10 +264,32 @@ body {
     filter 150ms ease;
 }
 
-.asset-button:hover .asset-icon {
+.asset-button:not(.uploaded-thumb):hover .asset-icon {
   opacity: 1; /* full opacity on hover */
   /* keep icons black on hover as well */
   filter: grayscale(1) brightness(0);
+}
+
+/* Uploaded image thumbnails: keep their real colors, but give the IMAGE
+   itself a subtle light outline (so the × remove button isn't included). */
+.asset-button.uploaded-thumb {
+  border: none;
+  box-shadow: none;
+}
+
+.asset-button.uploaded-thumb .asset-icon {
+  border-radius: 8px;
+  outline: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06) inset,
+    0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.asset-button.uploaded-thumb:hover .asset-icon {
+  outline-color: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.08) inset,
+    0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
 .assets-layer {
@@ -277,6 +299,7 @@ body {
   width: 100%;
   height: 100%;
   pointer-events: auto; /* allow event delegation and children to receive pointer events */
+  z-index: 3;
 }
 
 .placed-asset-shape {
@@ -284,6 +307,8 @@ body {
   pointer-events: auto;
   cursor: move;
   user-select: none;
+  -webkit-user-drag: none;
+  touch-action: none;
   /* will use mask-image to color SVGs */
   -webkit-mask-size: contain;
   mask-size: contain;
@@ -329,8 +354,10 @@ body {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 0; /* behind assets which have default stacking */
-  pointer-events: none; /* do not intercept clicks */
+  width: 100%;
+  height: 100%;
+  z-index: 1; /* behind grid + assets */
+  pointer-events: auto; /* allow dragging background images */
 }
 
 .trash.visible {

@@ -62,6 +62,9 @@ const assets = [
 const currentCanvasPreset = ref(canvasDimensions[0])
 const gridSize = ref(5)
 const placedAssets = ref([]) // Array to store placed assets on canvas
+// Uploaded images placed on the canvas should always sit UNDER the SVG assets.
+// We keep them in a separate list and render them in a layer below.
+const backgroundImages = ref([]) // Array to store placed uploaded images (raster) under assets
 const draggedAsset = ref(null)
 const canvasRef = ref(null)
 
@@ -115,6 +118,7 @@ const maxRedo = 100
 const getSnapshot = () => {
   return {
     placedAssets: JSON.parse(JSON.stringify(placedAssets.value)),
+    backgroundImages: JSON.parse(JSON.stringify(backgroundImages.value)),
     selectedBackgroundColor: selectedBackgroundColor.value,
     selectedAssetColor: selectedAssetColor.value,
     gridSize: gridSize.value,
@@ -141,6 +145,7 @@ const pushHistory = () => {
 const applySnapshot = (snap) => {
   if (!snap) return
   placedAssets.value = JSON.parse(JSON.stringify(snap.placedAssets || []))
+  backgroundImages.value = JSON.parse(JSON.stringify(snap.backgroundImages || []))
   selectedBackgroundColor.value = snap.selectedBackgroundColor || selectedBackgroundColor.value
   selectedAssetColor.value = snap.selectedAssetColor || selectedAssetColor.value
   gridSize.value = snap.gridSize || gridSize.value
@@ -313,6 +318,13 @@ const computeSnapFromPointer = (pointerX, pointerY, snapType, canvasWidth, canva
 const startDrag = (asset, event) => {
   draggedAsset.value = asset
   event.dataTransfer.effectAllowed = 'copy'
+  // Some browsers / nested layers can cause the reactive ref to be cleared
+  // before drop. Store a full payload so onDrop can recover reliably.
+  try {
+    event.dataTransfer.setData('application/x-stupidgenerator-asset', JSON.stringify(asset))
+  } catch (e) {
+    // ignore
+  }
   event.dataTransfer.setData('text/plain', asset.name)
   // show trash while dragging from palette
   trashVisible.value = true
@@ -334,7 +346,18 @@ const onDragOver = (event) => {
 
 const onDrop = (event) => {
   event.preventDefault()
-  if (!draggedAsset.value || !canvasRef.value) return
+  // Recover the dragged asset either from reactive state (normal path)
+  // or from the drag dataTransfer payload (more robust across layers).
+  let dragged = draggedAsset.value
+  if (!dragged) {
+    try {
+      const raw = event.dataTransfer.getData('application/x-stupidgenerator-asset')
+      if (raw) dragged = JSON.parse(raw)
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (!dragged || !canvasRef.value) return
 
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const canvasWidth = canvasRect.width
@@ -350,11 +373,11 @@ const onDrop = (event) => {
 
   let snappedX, snappedY
 
-  if (draggedAsset.value.snapType === 'intersection') {
+  if (dragged.snapType === 'intersection') {
     // Snap to grid intersections (corners where cells meet)
     snappedX = Math.round(x / cellWidth) * cellWidth
     snappedY = Math.round(y / cellHeight) * cellHeight
-  } else if (draggedAsset.value.snapType === 'edge') {
+  } else if (dragged.snapType === 'edge') {
     // Snap to nearest edge midpoint of the current cell
     const leftEdge = Math.floor(x / cellWidth) * cellWidth
     const rightEdge = Math.ceil(x / cellWidth) * cellWidth
@@ -417,16 +440,18 @@ const onDrop = (event) => {
   // Adjust placement for snap types.
   // Use current canvas cell width and the selected multiplier so the new
   // placed asset will scale with the grid when the slider changes.
-  const currentMultiplier = assetMultiplier.value || 1
+  // Decide size multiplier.
+  // - SVG assets use the existing 1x/2x control (and Star is forced 2x)
+  // - Uploaded images use their own 1–4 grid-square control
+  let currentMultiplier = assetMultiplier.value || 1
+  if (dragged && dragged.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
   // enforce Star to always be 2x regardless of UI selection
-  const forcedCurrentMultiplier =
-    draggedAsset.value && draggedAsset.value.name === 'Star' ? 2 : currentMultiplier
+  const forcedCurrentMultiplier = dragged && dragged.name === 'Star' ? 2 : currentMultiplier
   const currentAssetSize = Math.round(cellWidth * forcedCurrentMultiplier)
   // Only apply horizontal asset-specific offset for 1x assets — larger
   // multipliers may amplify the offset too much (Half Circle padding fix).
-  const dropOffsetX =
-    (currentMultiplier === 1 ? draggedAsset.value.offsetX || 0 : 0) * currentAssetSize
-  const dropOffsetY = (draggedAsset.value.offsetY || 0) * currentAssetSize
+  const dropOffsetX = (currentMultiplier === 1 ? dragged.offsetX || 0 : 0) * currentAssetSize
+  const dropOffsetY = (dragged.offsetY || 0) * currentAssetSize
 
   // Compute top-left so the asset is centered on the snap anchor. For 1x
   // assets snap to the containing cell top-left so they occupy exactly one
@@ -435,7 +460,7 @@ const onDrop = (event) => {
   if (forcedCurrentMultiplier === 1) {
     // If this asset snaps to edges, center it on the snap anchor even
     // at 1x so edge-aligned shapes (like Half Circle) sit correctly.
-    if (draggedAsset.value.snapType === 'edge') {
+    if (dragged.snapType === 'edge') {
       finalX = snappedX - currentAssetSize / 2
       finalY = snappedY - currentAssetSize / 2
     } else {
@@ -445,7 +470,7 @@ const onDrop = (event) => {
         Math.max(0, Math.min(gridColumns.value - 1, Math.floor(snappedX / cellWidth))) * cellWidth
       const cellTop =
         Math.max(0, Math.min(gridRows.value - 1, Math.floor(snappedY / cellHeight))) * cellHeight
-      if (draggedAsset.value.snapType === 'corner') {
+      if (dragged.snapType === 'corner') {
         // Decide which corner the snap anchor corresponds to
         const nearLeft = Math.abs(snappedX - cellLeft) <= epsilon
         const nearRight = Math.abs(snappedX - (cellLeft + cellWidth)) <= epsilon
@@ -471,7 +496,7 @@ const onDrop = (event) => {
   } else {
     // For multi-cell assets, align edge-snapping assets flush to the
     // appropriate side of the mult-sized block instead of centering.
-    if (draggedAsset.value.snapType === 'edge' && forcedCurrentMultiplier > 1) {
+    if (dragged.snapType === 'edge' && forcedCurrentMultiplier > 1) {
       // determine a top-left tile for the mult block that includes the anchor
       let col = Math.floor(snappedX / cellWidth)
       let row = Math.floor(snappedY / cellHeight)
@@ -521,6 +546,24 @@ const onDrop = (event) => {
     }
   }
 
+  // Uploaded images should feel “grid-aligned” at any size multiplier.
+  // For multiplier > 1, we want the TOP-LEFT to snap to a grid intersection.
+  // Use the drop's snap anchor (snappedX/snappedY) rather than the centered
+  // finalX/finalY (which can drift), then clamp so the full image stays in
+  // bounds.
+  if (dragged?.isUploaded && forcedCurrentMultiplier > 1) {
+    const maxCol = Math.max(0, gridColumns.value - forcedCurrentMultiplier)
+    const maxRow = Math.max(0, gridRows.value - forcedCurrentMultiplier)
+
+    let col = Math.round(snappedX / cellWidth)
+    let row = Math.round(snappedY / cellHeight)
+    col = Math.max(0, Math.min(maxCol, col))
+    row = Math.max(0, Math.min(maxRow, row))
+
+    finalX = Math.round(col * cellWidth)
+    finalY = Math.round(row * cellHeight)
+  }
+
   // Apply asset-specific offsets (fractions of asset size)
   finalX += dropOffsetX
   finalY += dropOffsetY
@@ -536,19 +579,31 @@ const onDrop = (event) => {
   // record state before adding new asset so Ctrl+Z can undo
   pushHistory()
 
-  placedAssets.value.push({
-    ...draggedAsset.value,
+  const newItem = {
+    ...dragged,
     x: finalX,
     y: finalY,
     rotation: 0,
     id: Date.now(),
-    multiplier: draggedAsset.value && draggedAsset.value.name === 'Star' ? 2 : currentMultiplier,
-  })
+    multiplier: dragged && dragged.name === 'Star' ? 2 : currentMultiplier,
+  }
+  // Uploaded raster images always go to the background layer
+  if (newItem.isUploaded) backgroundImages.value.push(newItem)
+  else placedAssets.value.push(newItem)
   // hide trash after a successful drop on canvas
   trashVisible.value = false
   draggedOverTrash.value = false
 
   draggedAsset.value = null
+}
+
+// Allow dropping even if the pointer is over an overlay layer.
+// We forward to the canvas handlers and prevent the overlay from blocking.
+const onOverlayDragOver = (event) => {
+  onDragOver(event)
+}
+const onOverlayDrop = (event) => {
+  onDrop(event)
 }
 
 // Spawn an asset at the visual center of the canvas. This respects the
@@ -575,7 +630,11 @@ const spawnAssetCentered = (asset) => {
       canvasHeight,
     )
 
+    // Decide size multiplier.
+    // - SVG assets use the existing 1x/2x control (and Star is forced 2x)
+    // - Uploaded images use their own 1–4 grid-square control
     let currentMultiplier = assetMultiplier.value || 1
+    if (asset && asset.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
     // enforce Star to always be 2x
     if (asset && asset.name === 'Star') currentMultiplier = 2
     const cellWidth = canvasWidth / gridColumns.value
@@ -635,14 +694,17 @@ const spawnAssetCentered = (asset) => {
     finalY = Math.max(0, Math.min(finalY, canvasHeight - currentAssetSize))
 
     pushHistory()
-    placedAssets.value.push({
+    const newItem = {
       ...asset,
       x: finalX,
       y: finalY,
       rotation: 0,
       id: Date.now(),
       multiplier: asset && asset.name === 'Star' ? 2 : currentMultiplier,
-    })
+    }
+    // Uploaded raster images always go under assets
+    if (newItem.isUploaded) backgroundImages.value.push(newItem)
+    else placedAssets.value.push(newItem)
   } catch (e) {
     console.debug('spawnAssetCentered failed', e)
   }
@@ -677,16 +739,28 @@ const draggedOverTrash = ref(false)
 const draggedElement = ref(null) // store the actual DOM element being dragged
 const _globalMoveHandler = { fn: null }
 const _globalUpHandler = { fn: null }
+const _globalPointerMoveHandler = { fn: null }
+const _globalPointerUpHandler = { fn: null }
 const moveListenersAdded = ref(false)
 const dragActive = ref(false)
 
 // Asset size multiplier: 1 = one grid square wide, 2 = two grid squares wide
 const assetMultiplier = ref(2)
 
+// Uploaded/background image size in grid squares (independent of SVG asset size)
+// This decides how many grid squares a newly placed uploaded image should fill.
+const backgroundImageMultiplier = ref(1)
+
 const changeAssetSize = (mult) => {
   // Accept only 1 or 2 for now; ignore invalid values
   if (mult !== 1 && mult !== 2) return
   assetMultiplier.value = mult
+}
+
+const changeBackgroundImageSize = (mult) => {
+  // 4 choices requested: 1–4 grid squares
+  if (![1, 2, 3, 4].includes(mult)) return
+  backgroundImageMultiplier.value = mult
 }
 
 // Pattern generation mode: 'random' (existing), 'checkerboard' (alternating 1x/2x tiles)
@@ -731,27 +805,99 @@ const startMovingAsset = (asset, event, el = null) => {
   if (!moveListenersAdded.value) {
     _globalMoveHandler.fn = (e) => onCanvasMouseMove(e)
     _globalUpHandler.fn = (e) => onCanvasMouseUp(e)
+    // Pointer events (covers trackpad/touch/pen and fixes <img> quirks)
+    _globalPointerMoveHandler.fn = (e) => onCanvasMouseMove(e)
+    _globalPointerUpHandler.fn = (e) => onCanvasMouseUp(e)
     window.addEventListener('mousemove', _globalMoveHandler.fn)
     window.addEventListener('mouseup', _globalUpHandler.fn)
+    window.addEventListener('pointermove', _globalPointerMoveHandler.fn)
+    window.addEventListener('pointerup', _globalPointerUpHandler.fn)
+    window.addEventListener('pointercancel', _globalPointerUpHandler.fn)
     moveListenersAdded.value = true
   }
 }
 
-// Delegated mousedown handler on the assets-layer so every placed asset is draggable
-const onAssetsLayerMouseDown = (event) => {
-  const el = event.target.closest && event.target.closest('.placed-asset-shape')
+// Delegated pointerdown handler on the asset layers so every placed asset is draggable.
+// Pointer events are more reliable than mouse events on <img> across browsers.
+const onAssetsLayerPointerDown = (event) => {
+  // In some cases (especially <img>), the pointer event target can be the layer
+  // rather than the element; search from composedPath as a fallback.
+  let el = event.target && event.target.closest && event.target.closest('.placed-asset-shape')
+  if (!el && typeof event.composedPath === 'function') {
+    const path = event.composedPath()
+    el = path.find((n) => n && n.classList && n.classList.contains('placed-asset-shape'))
+  }
   if (!el) return
   const id = el.dataset && el.dataset.id
   if (!id) return
-  const found = placedAssets.value.find((a) => String(a.id) === String(id))
+  // Selection priority:
+  // - Hold Alt/Option to grab BACKGROUND images (even if assets are on top)
+  // - Otherwise grab regular placed assets as usual
+  const preferBackground = !!event.altKey
+  const found = preferBackground
+    ? backgroundImages.value.find((a) => String(a.id) === String(id))
+    : placedAssets.value.find((a) => String(a.id) === String(id)) ||
+      backgroundImages.value.find((a) => String(a.id) === String(id))
   if (!found) return
-  // Debug/logging: show coordinates and element rect to diagnose offset issues
-  // debug block removed
 
-  // Delegate to startMovingAsset with the original mouse event and the
-  // actual element so we can compute a pixel-accurate drag offset.
+  // Capture pointer so we keep receiving move events even if the pointer
+  // leaves the element/canvas while dragging.
+  try {
+    if (typeof el.setPointerCapture === 'function' && event.pointerId != null) {
+      el.setPointerCapture(event.pointerId)
+    }
+  } catch (e) {
+    // ignore
+  }
+
   startMovingAsset(found, event, el)
-  // prevent text selection / default drag behaviour
+  event.preventDefault()
+}
+
+const onCanvasPointerMove = (event) => {
+  // Delegate to existing mousemove logic (it only relies on clientX/clientY).
+  onCanvasMouseMove(event)
+}
+
+const onCanvasPointerUp = (event) => {
+  onCanvasMouseUp(event)
+}
+
+// Alt/Option-drag for background images:
+// When assets are on top you can't click the background image element, so we
+// hit-test against backgroundImages by pointer position and start dragging the
+// topmost background image under the cursor.
+const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
+  if (!canvasRef.value) return null
+  // iterate from last to first so the most recently placed one wins
+  for (let i = backgroundImages.value.length - 1; i >= 0; i--) {
+    const img = backgroundImages.value[i]
+    const w = getAssetPixelSize(img)
+    const h = getAssetPixelSize(img)
+    if (canvasX >= img.x && canvasX <= img.x + w && canvasY >= img.y && canvasY <= img.y + h) {
+      return img
+    }
+  }
+  return null
+}
+
+const onCanvasPointerDown = (event) => {
+  // Only activate this mode when Alt/Option is held.
+  if (!event.altKey) return
+  if (!canvasRef.value) return
+  // Don't interfere with palette HTML5 drag/drop.
+  if (draggedAsset.value) return
+
+  const canvasRect = canvasRef.value.getBoundingClientRect()
+  const x = event.clientX - canvasRect.left
+  const y = event.clientY - canvasRect.top
+
+  const hit = findTopmostBackgroundImageAt(x, y)
+  if (!hit) return
+
+  // Find the actual element so offset uses its rendered box (rotation etc.).
+  const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hit.id}"]`)
+  startMovingAsset(hit, event, el)
   event.preventDefault()
 }
 
@@ -932,8 +1078,10 @@ const onCanvasMouseUp = (event) => {
           // record previous state so undo can revert the deletion
           pushHistory()
           const idToRemove = draggedPlacedAsset.value.id
+          const idxBg = backgroundImages.value.findIndex((a) => a.id === idToRemove)
           const idx = placedAssets.value.findIndex((a) => a.id === idToRemove)
-          if (idx !== -1) placedAssets.value.splice(idx, 1)
+          if (idxBg !== -1) backgroundImages.value.splice(idxBg, 1)
+          else if (idx !== -1) placedAssets.value.splice(idx, 1)
           // hide trash and reset flags
           draggedPlacedAsset.value = null
           draggedOverTrash.value = false
@@ -1028,9 +1176,20 @@ const onCanvasMouseUp = (event) => {
           snappedTopLeftY = row * cellHeightNow
         }
       } else {
-        // For multi-cell assets, align edge-snapping assets flush to the
-        // appropriate side of the mult-sized block instead of centering.
-        if (asset.snapType === 'edge' && currentMultiplier > 1) {
+        // Uploaded images: for any multiplier > 1, snap TOP-LEFT to a grid
+        // intersection so the image occupies whole squares (e.g. 3x3).
+        if (asset.isUploaded) {
+          const maxCol = Math.max(0, gridColumns.value - currentMultiplier)
+          const maxRow = Math.max(0, gridRows.value - currentMultiplier)
+          let col = Math.round(snapAnchor.x / cellWidthNow)
+          let row = Math.round(snapAnchor.y / cellHeightNow)
+          col = Math.max(0, Math.min(maxCol, col))
+          row = Math.max(0, Math.min(maxRow, row))
+          snappedTopLeftX = col * cellWidthNow
+          snappedTopLeftY = row * cellHeightNow
+        } else if (asset.snapType === 'edge' && currentMultiplier > 1) {
+          // For multi-cell assets, align edge-snapping assets flush to the
+          // appropriate side of the mult-sized block instead of centering.
           // determine a top-left tile to place the mult block
           let col = Math.floor(snapAnchor.x / cellWidthNow)
           let row = Math.floor(snapAnchor.y / cellHeightNow)
@@ -1160,11 +1319,19 @@ const onCanvasMouseUp = (event) => {
     try {
       if (_globalMoveHandler.fn) window.removeEventListener('mousemove', _globalMoveHandler.fn)
       if (_globalUpHandler.fn) window.removeEventListener('mouseup', _globalUpHandler.fn)
+      if (_globalPointerMoveHandler.fn)
+        window.removeEventListener('pointermove', _globalPointerMoveHandler.fn)
+      if (_globalPointerUpHandler.fn)
+        window.removeEventListener('pointerup', _globalPointerUpHandler.fn)
+      if (_globalPointerUpHandler.fn)
+        window.removeEventListener('pointercancel', _globalPointerUpHandler.fn)
     } catch (e) {
       console.warn('error removing global move listeners', e)
     }
     _globalMoveHandler.fn = null
     _globalUpHandler.fn = null
+    _globalPointerMoveHandler.fn = null
+    _globalPointerUpHandler.fn = null
     moveListenersAdded.value = false
   }
 }
@@ -1226,26 +1393,31 @@ watch(
       const cellH = cellW
       const rows = Math.max(2, Math.floor(canvasHeight / cellH))
 
+      const pruneList = (list) =>
+        list.filter((asset) => {
+          const w = getAssetPixelSize(asset)
+          const h = w
+          const left = asset.x
+          const top = asset.y
+          const startCol = Math.floor(left / cellW)
+          const endCol = Math.floor((left + w - 1) / cellW)
+          const startRow = Math.floor(top / cellH)
+          const endRow = Math.floor((top + h - 1) / cellH)
+
+          // If asset occupies any cell outside the new grid, drop it.
+          if (startCol < 0 || endCol >= cols || startRow < 0 || endRow >= rows) return false
+          return true
+        })
+
       const beforeCount = placedAssets.value.length
-      const kept = placedAssets.value.filter((asset) => {
-        const w = getAssetPixelSize(asset)
-        const h = w
-        const left = asset.x
-        const top = asset.y
-        const startCol = Math.floor(left / cellW)
-        const endCol = Math.floor((left + w - 1) / cellW)
-        const startRow = Math.floor(top / cellH)
-        const endRow = Math.floor((top + h - 1) / cellH)
+      const kept = pruneList(placedAssets.value)
+      const beforeBgCount = backgroundImages.value.length
+      const keptBg = pruneList(backgroundImages.value)
 
-        // If asset occupies any cell outside the new grid, drop it.
-        if (startCol < 0 || endCol >= cols || startRow < 0 || endRow >= rows) return false
-        return true
-      })
-
-      if (kept.length !== beforeCount) {
-        // record previous state so undo can restore removed assets
+      if (kept.length !== beforeCount || keptBg.length !== beforeBgCount) {
         pushHistory()
         placedAssets.value = kept
+        backgroundImages.value = keptBg
       }
     } catch (e) {
       console.warn('error pruning placed assets after grid change', e)
@@ -1460,6 +1632,21 @@ const getExportSVGStringAsync = async () => {
   svg += `<rect x="0" y="0" width="${exportW}" height="${exportH}" fill="${svgEscape(
     selectedBackgroundColor.value,
   )}"/>\n`
+
+  // Background images (uploaded) are rendered first so they sit under assets.
+  for (const a of backgroundImages.value) {
+    const rx = (a.x || 0) * scale
+    const ry = (a.y || 0) * scale
+    const rw = getAssetPixelSize(a) * scale
+    const rh = rw
+    const rotation = a.rotation || 0
+    const cx = rx + rw / 2
+    const cy = ry + rh / 2
+    const href = a.dataUrl || a.path
+    svg += `<g transform="rotate(${rotation} ${cx} ${cy})">\n`
+    svg += `<image href="${svgEscape(href)}" x="${rx}" y="${ry}" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
+    svg += `</g>\n`
+  }
 
   // Build each asset; fetch and inline its data URL first
   let defs = ''
@@ -2559,10 +2746,50 @@ const randomizePattern = () => {
       </div>
       <!-- Uploaded images section -->
       <div class="ml-3 mt-4">
-        <h2 class="font-object font-medium text-base mt-6">Upload image</h2>
+        <h2 class="font-object font-medium text-base mt-10">Upload image</h2>
         <p class="font-object text-xs mb-3 text-gray-500">
-          Click to upload, then drag or click to place on canvas.
+          Click to upload, drag to add, <strong>hold alt/option down and drag to move.</strong>
         </p>
+
+        <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
+        <div class="flex gap-2 mb-4">
+          <button
+            @click="changeBackgroundImageSize(1)"
+            :class="[
+              'sizebutton px-2 border-2 cursor-pointer',
+              { active: backgroundImageMultiplier === 1 },
+            ]"
+          >
+            1
+          </button>
+          <button
+            @click="changeBackgroundImageSize(2)"
+            :class="[
+              'sizebutton px-2 border-2 cursor-pointer',
+              { active: backgroundImageMultiplier === 2 },
+            ]"
+          >
+            2
+          </button>
+          <button
+            @click="changeBackgroundImageSize(3)"
+            :class="[
+              'sizebutton px-2 border-2 cursor-pointer',
+              { active: backgroundImageMultiplier === 3 },
+            ]"
+          >
+            3
+          </button>
+          <button
+            @click="changeBackgroundImageSize(4)"
+            :class="[
+              'sizebutton px-2 border-2 cursor-pointer',
+              { active: backgroundImageMultiplier === 4 },
+            ]"
+          >
+            4
+          </button>
+        </div>
 
         <!-- Hidden real file input -->
         <input
@@ -2623,62 +2850,79 @@ const randomizePattern = () => {
           class="canvas-preset"
           @dragover="onDragOver"
           @drop="onDrop"
+          @pointerdown="onCanvasPointerDown"
+          @pointermove="onCanvasPointerMove"
+          @pointerup="onCanvasPointerUp"
+          @pointercancel="onCanvasPointerUp"
           @mousemove="onCanvasMouseMove"
           @mouseup="onCanvasMouseUp"
           @mouseleave="onCanvasMouseUp"
         >
-          <div :style="gridStyle" class="grid-container">
-            <div v-for="cell in gridCells" :key="cell" class="grid-cell"></div>
-          </div>
-
-          <!-- Placed assets layer -->
-          <div class="assets-layer" @mousedown="onAssetsLayerMouseDown($event)">
-            <template v-for="asset in placedAssets" :key="asset.id">
-              <!-- Uploaded raster images: render as <img> so their own colors show -->
+          <!-- Background images layer (under assets) -->
+          <div
+            class="background-layer"
+            @pointerdown="onAssetsLayerPointerDown($event)"
+            @dragover.stop.prevent="onOverlayDragOver"
+            @drop.stop.prevent="onOverlayDrop"
+          >
+            <template v-for="img in backgroundImages" :key="img.id">
               <img
-                v-if="asset.isUploaded"
                 class="placed-asset-shape placed-uploaded"
-                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
-                :data-id="asset.id"
-                :src="asset.dataUrl || asset.path"
-                :alt="asset.name"
-                @click="onAssetClick(asset, $event)"
+                draggable="false"
+                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
+                :data-id="img.id"
+                :src="img.dataUrl || img.path"
+                :alt="img.name"
+                @click="onAssetClick(img, $event)"
                 :style="{
-                  left: asset.x + 'px',
-                  top: asset.y + 'px',
-                  width: getAssetPixelSize(asset) + 'px',
-                  height: getAssetPixelSize(asset) + 'px',
-                  transform: `rotate(${asset.rotation || 0}deg)`,
+                  left: img.x + 'px',
+                  top: img.y + 'px',
+                  width: getAssetPixelSize(img) + 'px',
+                  height: getAssetPixelSize(img) + 'px',
+                  transform: `rotate(${img.rotation || 0}deg)`,
                   transformOrigin: 'center center',
                   objectFit: 'contain',
                 }"
               />
-              <!-- SVG palette assets: CSS mask to apply chosen color -->
-              <div
-                v-else
-                class="placed-asset-shape"
-                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
-                :data-id="asset.id"
-                @click="onAssetClick(asset, $event)"
-                :style="{
-                  left: asset.x + 'px',
-                  top: asset.y + 'px',
-                  width: getAssetPixelSize(asset) + 'px',
-                  height: getAssetPixelSize(asset) + 'px',
-                  background: selectedAssetColor,
-                  WebkitMaskImage: `url(${asset.path})`,
-                  maskImage: `url(${asset.path})`,
-                  WebkitMaskSize: 'contain',
-                  maskSize: 'contain',
-                  WebkitMaskRepeat: 'no-repeat',
-                  maskRepeat: 'no-repeat',
-                  WebkitMaskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
-                  maskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
-                  transform: `rotate(${asset.rotation || 0}deg)`,
-                  transformOrigin: 'center center',
-                }"
-              />
             </template>
+          </div>
+
+          <div :style="gridStyle" class="grid-container">
+            <div v-for="cell in gridCells" :key="cell" class="grid-cell"></div>
+          </div>
+
+          <!-- Placed assets layer (SVG assets only) -->
+          <div
+            class="assets-layer"
+            @pointerdown="onAssetsLayerPointerDown($event)"
+            @dragover.stop.prevent="onOverlayDragOver"
+            @drop.stop.prevent="onOverlayDrop"
+          >
+            <div
+              v-for="asset in placedAssets"
+              :key="asset.id"
+              class="placed-asset-shape"
+              :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
+              :data-id="asset.id"
+              @click="onAssetClick(asset, $event)"
+              :style="{
+                left: asset.x + 'px',
+                top: asset.y + 'px',
+                width: getAssetPixelSize(asset) + 'px',
+                height: getAssetPixelSize(asset) + 'px',
+                background: selectedAssetColor,
+                WebkitMaskImage: `url(${asset.path})`,
+                maskImage: `url(${asset.path})`,
+                WebkitMaskSize: 'contain',
+                maskSize: 'contain',
+                WebkitMaskRepeat: 'no-repeat',
+                maskRepeat: 'no-repeat',
+                WebkitMaskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
+                maskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
+                transform: `rotate(${asset.rotation || 0}deg)`,
+                transformOrigin: 'center center',
+              }"
+            />
           </div>
         </div>
         <!-- Trash positioned absolutely inside canvas-wrapper so it doesn't affect layout -->
