@@ -1673,7 +1673,36 @@ const exportAsPDF = async () => {
   }
 }
 
-// Rotate a placed asset 90 degrees clockwise on click
+// --- Uploaded images (user-provided raster assets) ---------------------
+const uploadedImages = ref([]) // [{ name, dataUrl, snapType, isUploaded }]
+const uploadInputRef = ref(null)
+
+const onUploadImage = (e) => {
+  const files = e.target.files
+  if (!files || !files.length) return
+  for (const file of files) {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      uploadedImages.value.push({
+        name: file.name,
+        path: ev.target.result,
+        dataUrl: ev.target.result,
+        snapType: 'intersection',
+        isUploaded: true,
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+  // reset so the same file can be re-uploaded if needed
+  e.target.value = ''
+}
+
+const removeUploadedImage = (img) => {
+  const idx = uploadedImages.value.indexOf(img)
+  if (idx !== -1) uploadedImages.value.splice(idx, 1)
+}
+
+// --- Rotate a placed asset 90 degrees clockwise on click
 const rotateAsset = (asset) => {
   // record state before rotation so it can be undone
   pushHistory()
@@ -2438,7 +2467,7 @@ const randomizePattern = () => {
 <template>
   <div class="w-full h-screen maingrid">
     <!-- UI Section -->
-    <div class="bg-white m-1">
+    <div class="bg-white m-1 sidebar">
       <h1 class="font-object font-bold text-xl ml-3 mt-1">Stupid Generator</h1>
       <!-- Generator type removed -->
       <div class="ml-3 mt-8">
@@ -2528,6 +2557,51 @@ const randomizePattern = () => {
           Pattern Randomizer
         </button>
       </div>
+      <!-- Uploaded images section -->
+      <div class="ml-3 mt-4">
+        <h2 class="font-object font-medium text-base mt-6">Upload image</h2>
+        <p class="font-object text-xs mb-3 text-gray-500">
+          Click to upload, then drag or click to place on canvas.
+        </p>
+
+        <!-- Hidden real file input -->
+        <input
+          ref="uploadInputRef"
+          type="file"
+          accept="image/*"
+          multiple
+          class="hidden"
+          @change="onUploadImage"
+        />
+
+        <!-- Styled upload button matching other buttons -->
+        <button
+          class="savebutton font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer mb-3"
+          @click.prevent="uploadInputRef.click()"
+        >
+          + Upload image
+        </button>
+
+        <!-- Grid of uploaded image thumbnails -->
+        <div v-if="uploadedImages.length" class="assets-container grid grid-cols-4 mb-4">
+          <div
+            v-for="img in uploadedImages"
+            :key="img.name + img.dataUrl"
+            class="asset-button uploaded-thumb relative"
+            draggable="true"
+            @dragstart="startDrag(img, $event)"
+            @dragend="onDragEnd"
+            @click.prevent="spawnAssetCentered(img)"
+            :title="img.name"
+          >
+            <img :src="img.dataUrl" :alt="img.name" class="asset-icon object-cover rounded" />
+            <!-- small remove × button -->
+            <button class="remove-uploaded" @click.stop="removeUploadedImage(img)" title="Remove">
+              ×
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="ml-3 mt-8">
         <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
         <div class="flex gap-2 mb-4">
@@ -2559,31 +2633,52 @@ const randomizePattern = () => {
 
           <!-- Placed assets layer -->
           <div class="assets-layer" @mousedown="onAssetsLayerMouseDown($event)">
-            <div
-              v-for="asset in placedAssets"
-              :key="asset.id"
-              class="placed-asset-shape"
-              :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
-              :data-id="asset.id"
-              @click="onAssetClick(asset, $event)"
-              :style="{
-                left: asset.x + 'px',
-                top: asset.y + 'px',
-                width: getAssetPixelSize(asset) + 'px',
-                height: getAssetPixelSize(asset) + 'px',
-                background: selectedAssetColor,
-                WebkitMaskImage: `url(${asset.path})`,
-                maskImage: `url(${asset.path})`,
-                WebkitMaskSize: 'contain',
-                maskSize: 'contain',
-                WebkitMaskRepeat: 'no-repeat',
-                maskRepeat: 'no-repeat',
-                WebkitMaskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
-                maskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
-                transform: `rotate(${asset.rotation || 0}deg)`,
-                transformOrigin: 'center center',
-              }"
-            />
+            <template v-for="asset in placedAssets" :key="asset.id">
+              <!-- Uploaded raster images: render as <img> so their own colors show -->
+              <img
+                v-if="asset.isUploaded"
+                class="placed-asset-shape placed-uploaded"
+                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
+                :data-id="asset.id"
+                :src="asset.dataUrl || asset.path"
+                :alt="asset.name"
+                @click="onAssetClick(asset, $event)"
+                :style="{
+                  left: asset.x + 'px',
+                  top: asset.y + 'px',
+                  width: getAssetPixelSize(asset) + 'px',
+                  height: getAssetPixelSize(asset) + 'px',
+                  transform: `rotate(${asset.rotation || 0}deg)`,
+                  transformOrigin: 'center center',
+                  objectFit: 'contain',
+                }"
+              />
+              <!-- SVG palette assets: CSS mask to apply chosen color -->
+              <div
+                v-else
+                class="placed-asset-shape"
+                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === asset.id }"
+                :data-id="asset.id"
+                @click="onAssetClick(asset, $event)"
+                :style="{
+                  left: asset.x + 'px',
+                  top: asset.y + 'px',
+                  width: getAssetPixelSize(asset) + 'px',
+                  height: getAssetPixelSize(asset) + 'px',
+                  background: selectedAssetColor,
+                  WebkitMaskImage: `url(${asset.path})`,
+                  maskImage: `url(${asset.path})`,
+                  WebkitMaskSize: 'contain',
+                  maskSize: 'contain',
+                  WebkitMaskRepeat: 'no-repeat',
+                  maskRepeat: 'no-repeat',
+                  WebkitMaskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
+                  maskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
+                  transform: `rotate(${asset.rotation || 0}deg)`,
+                  transformOrigin: 'center center',
+                }"
+              />
+            </template>
           </div>
         </div>
         <!-- Trash positioned absolutely inside canvas-wrapper so it doesn't affect layout -->

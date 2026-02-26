@@ -68,6 +68,27 @@ body {
   grid-template-columns: 0.5fr 2fr;
 }
 
+/* Left UI sidebar: scrollable independently of the canvas */
+.sidebar {
+  /* fill the viewport height minus the small page margin so the
+     canvas column remains fixed and only this panel scrolls */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  /* keep the inner content from stretching the sidebar
+     and provide comfortable padding */
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+/* Optional: subtle scrollbar styling for modern browsers */
+.sidebar::-webkit-scrollbar {
+  width: 10px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+}
+
 .slidercontainer {
   width: 100%;
 }
@@ -192,7 +213,6 @@ body {
   background-color: rgba(0, 0, 0, 0.12);
 }
 
-
 .invert-button {
   width: 44px;
   height: 44px;
@@ -209,7 +229,6 @@ body {
 
 .invert-button:hover {
   background-color: rgba(0, 0, 0, 0.12);
-
 }
 
 .color-swatch {
@@ -305,6 +324,15 @@ body {
   z-index: 30;
 }
 
+/* Background image layer (under assets) */
+.background-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0; /* behind assets which have default stacking */
+  pointer-events: none; /* do not intercept clicks */
+}
+
 .trash.visible {
   opacity: 1;
   pointer-events: auto;
@@ -350,7 +378,6 @@ body {
   content: none;
 }
 
-
 .savebutton {
   transition-duration: 0.15s;
   background: transparent;
@@ -365,3 +392,61 @@ body {
 .savebutton:hover {
   background-color: rgba(0, 0, 0, 0.12);
 }
+
+/* --------------------------------------------------------------------------
+   SCROLLBAR THEME (easy to customize)
+
+   Edit the CSS variables below to change the scrollbar appearance. Use the
+   utility class `.scrollable` on any element you want to style, or the
+   existing `.sidebar` is already targeted for you.
+   Note: WebKit browsers (Chrome, Safari) use ::-webkit-scrollbar pseudo
+   elements; Firefox uses `scrollbar-width` and `scrollbar-color`.
+   ------------------------------------------------------------------------ */
+
+:root {
+  --scrollbar-width: 10px; /* thickness (px) for webkit */
+  --scrollbar-track: #ffffff; /* track / background */
+  --scrollbar-thumb: #888888; /* thumb (handle) color */
+  --scrollbar-thumb-hover: #000000; /* thumb color on hover */
+  --scrollbar-radius: 8px; /* thumb roundness */
+}
+
+/* Utility class: apply this to any element that should get the custom scrollbar */
+.scrollable,
+/* also apply to the app's sidebar by default */
+.sidebar {
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* WebKit: width/height of the scrollbar */
+.scrollable::-webkit-scrollbar,
+.sidebar::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+.scrollable::-webkit-scrollbar-track,
+.sidebar::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+.scrollable::-webkit-scrollbar-thumb,
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+  /* optional inner padding so thumb doesn't touch rounded track edges */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.scrollable::-webkit-scrollbar-thumb:hover,
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Small note for macOS: system overlay scrollbars may be hidden until scroll.
+   This is a platform behavior — to test visuals, try in Chrome on desktop
+   or temporarily change macOS System Preferences -> General -> Show scroll
+   bars -> Always. */
