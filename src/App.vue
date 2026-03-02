@@ -70,6 +70,45 @@ const onUploadSvgAsset = (e) => {
       const dataUrl = ev?.target?.result
       if (!dataUrl) return
 
+      // Pattern finder behavior: uploaded SVG becomes a large background layer
+      // behind the canvas viewport (viewport masks/clips it).
+      // We store it in backgroundImages so it renders under placed assets.
+      if (editorMode.value === 'pattern') {
+        try {
+          // Put it at the origin and scale it up by using a large logical size.
+          // The render layer clips anything outside the canvas.
+          pushHistory()
+
+          backgroundImages.value = [
+            {
+              id: Date.now() + Math.floor(Math.random() * 100000),
+              name: file.name || 'Pattern background SVG',
+              path: dataUrl,
+              dataUrl,
+              isUploaded: true,
+              // Offsets from canvas center (used by drag + sliders)
+              x: patternBackground.value.x || 0,
+              y: patternBackground.value.y || 0,
+              rotation: patternBackground.value.rotation || 0,
+              // Explicit render size in pixels for pattern-finder background.
+              // We render this behind the viewport; anything outside is clipped.
+              renderW: 6000,
+              renderH: 6000,
+              scale: patternBackground.value.scale || 1,
+              multiplier: 0,
+            },
+          ]
+
+          // Also clear any placed SVG assets so focus stays on the background.
+          // (Safe default; remove if you want to keep existing assets.)
+          placedAssets.value = []
+        } catch (err) {
+          console.warn('Pattern finder SVG background insert failed', err)
+        }
+
+        return
+      }
+
       const baseName = (file.name || 'Uploaded SVG').replace(/\.svg$/i, '')
       // Ensure unique display names in the palette
       let name = baseName
@@ -115,6 +154,38 @@ const openUploadSvgPicker = () => {
   const el = uploadSvgInputRef.value
   if (el && typeof el.click === 'function') el.click()
 }
+
+// --- Pattern finder background controls ------------------------------
+// These values control the big uploaded SVG that sits behind the canvas
+// and is clipped by the viewport.
+const patternBackground = ref({
+  scale: 1,
+  x: 0,
+  y: 0,
+  rotation: 0,
+})
+
+// Visible canvas viewport center (in CSS pixels). Used as a stable pivot
+// for Pattern finder background transforms.
+const canvasCenterPx = computed(() => {
+  try {
+    if (!canvasRef.value || !canvasRef.value.getBoundingClientRect) return { cx: 0, cy: 0 }
+    const r = canvasRef.value.getBoundingClientRect()
+    return { cx: r.width / 2, cy: r.height / 2 }
+  } catch (e) {
+    return { cx: 0, cy: 0 }
+  }
+})
+
+// Lock Pattern finder pivot to the *visible canvas viewport* center.
+// We return percentages so transforms stay stable even if the canvas is scaled
+// via responsive CSS. (Using px here caused subtle drift when layout changed.)
+const canvasCenterCss = computed(() => {
+  return {
+    left: '50%',
+    top: '50%',
+  }
+})
 
 // Asset palette: click to spawn centered.
 const onPaletteAssetClick = (asset) => {
@@ -573,6 +644,14 @@ const onTrashDrop = (e) => {
 // Move existing assets
 const draggedPlacedAsset = ref(null)
 const dragOffset = ref({ x: 0, y: 0 })
+// Pattern finder: keep the dragged SVG under the cursor even when scale/rotation
+// change by recording where on the SVG the user grabbed it.
+// Everything is in *rendered canvas CSS pixels*.
+const patternGrab = ref(null) // { pointerDx, pointerDy, startX, startY, startScale, startRotation }
+
+// Pattern finder: we keep the pivot locked to the canvas center.
+// During drag we simply update translation offsets (x/y). These offsets are stored
+// in *screen (canvas CSS) pixels* and should NOT be divided by scale.
 const lastSnap = ref({ x: 0, y: 0 })
 const draggedDuringInteraction = ref(false)
 const justDragged = ref(false)
@@ -614,6 +693,42 @@ const patternMode = ref('checkerboard')
 const startMovingAsset = (asset, event, el = null) => {
   draggedPlacedAsset.value = asset
 
+  // Pattern finder background uses a fixed pivot at canvas center (50%/50%).
+  // While dragging, we must NOT let the pivot move; instead we update asset.x/y
+  // (translation) such that the point the user grabbed stays under the pointer.
+  if (editorMode.value === 'pattern' && asset && asset.renderW && asset.renderH) {
+    try {
+      const canvasRect = canvasRef.value.getBoundingClientRect()
+
+      // Pointer position in canvas-local coords
+      const ptrX = event.clientX - canvasRect.left
+      const ptrY = event.clientY - canvasRect.top
+
+      // Current translation offsets (center-offset space)
+      const tx = asset.x || 0
+      const ty = asset.y || 0
+
+      // Compute pointer position relative to the SVG's *current* center.
+      // SVG center is always canvas center + translation.
+      const dx = ptrX - (canvasRect.width / 2 + tx)
+      const dy = ptrY - (canvasRect.height / 2 + ty)
+
+      patternGrab.value = {
+        // Store grabbed offset in screen px (same unit as x/y)
+        pointerDx: dx,
+        pointerDy: dy,
+        startX: tx,
+        startY: ty,
+        startScale: asset.scale || 1,
+        startRotation: asset.rotation || 0,
+      }
+    } catch (e) {
+      patternGrab.value = null
+    }
+  } else {
+    patternGrab.value = null
+  }
+
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const mouseX = event.clientX - canvasRect.left
   const mouseY = event.clientY - canvasRect.top
@@ -622,7 +737,19 @@ const startMovingAsset = (asset, event, el = null) => {
   // (accounts for SVG viewBox, internal padding, rotation, mask centering).
   // Fallback to using stored asset.x/asset.y if element rect isn't provided.
   try {
-    if (el && el.getBoundingClientRect) {
+    // Pattern finder background: asset.x/asset.y are OFFSETS from canvas center,
+    // and the element may be scaled. Compute the visual top-left so dragging
+    // doesn't jump when scale changes.
+    if (editorMode.value === 'pattern' && asset && asset.renderW && asset.renderH) {
+      const rect = canvasRect
+      const w = asset.renderW
+      const h = asset.renderH
+      // With the 50%/50% anchor model the visual top-left is center - half size + offsets
+      const left = rect.width / 2 - w / 2 + (asset.x || 0)
+      const top = rect.height / 2 - h / 2 + (asset.y || 0)
+      dragOffset.value = { x: mouseX - left, y: mouseY - top }
+      draggedElement.value = el
+    } else if (el && el.getBoundingClientRect) {
       const elRect = el.getBoundingClientRect()
       const elLeftRel = elRect.left - canvasRect.left
       const elTopRel = elRect.top - canvasRect.top
@@ -643,7 +770,8 @@ const startMovingAsset = (asset, event, el = null) => {
   trashVisible.value = true
   draggedOverTrash.value = false
   // indicate active drag so canvas can allow overflow
-  dragActive.value = true
+  // (but keep Pattern finder clipped so bg doesn't float outside the viewport)
+  dragActive.value = editorMode.value !== 'pattern'
   // attach global listeners so we can continue dragging outside the canvas
   if (!moveListenersAdded.value) {
     _globalMoveHandler.fn = (e) => onCanvasMouseMove(e)
@@ -715,9 +843,21 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
   // iterate from last to first so the most recently placed one wins
   for (let i = backgroundImages.value.length - 1; i >= 0; i--) {
     const img = backgroundImages.value[i]
-    const w = getAssetPixelSize(img)
-    const h = getAssetPixelSize(img)
-    if (canvasX >= img.x && canvasX <= img.x + w && canvasY >= img.y && canvasY <= img.y + h) {
+    const w = img.renderW || getAssetPixelSize(img)
+    const h = img.renderH || getAssetPixelSize(img)
+
+    // Pattern finder background is centered; treat img.x/img.y as offsets from center
+    let left = img.x || 0
+    let top = img.y || 0
+    if (img.renderW && img.renderH) {
+      try {
+        const rect = canvasRef.value.getBoundingClientRect()
+        left = rect.width / 2 - img.renderW / 2 + (img.x || 0)
+        top = rect.height / 2 - img.renderH / 2 + (img.y || 0)
+      } catch (e) {}
+    }
+
+    if (canvasX >= left && canvasX <= left + w && canvasY >= top && canvasY <= top + h) {
       return img
     }
   }
@@ -725,8 +865,9 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
 }
 
 const onCanvasPointerDown = (event) => {
-  // Only activate this mode when Alt/Option is held.
-  if (!event.altKey) return
+  // Sandbox: background dragging requires Alt/Option.
+  // Pattern finder: allow dragging the big background directly.
+  if (editorMode.value !== 'pattern' && !event.altKey) return
   if (!canvasRef.value) return
   // Don't interfere with palette HTML5 drag/drop.
   if (draggedAsset.value) return
@@ -746,6 +887,59 @@ const onCanvasPointerDown = (event) => {
 
 const onCanvasMouseMove = (event) => {
   if (!draggedPlacedAsset.value || !canvasRef.value) return
+
+  // Pattern finder background should move freely (no grid snapping).
+  if (
+    editorMode.value === 'pattern' &&
+    draggedPlacedAsset.value.renderW &&
+    draggedPlacedAsset.value.renderH
+  ) {
+    draggedDuringInteraction.value = true
+
+    const canvasRect = canvasRef.value.getBoundingClientRect()
+
+    // Pointer position in canvas-local coords
+    const ptrX = event.clientX - canvasRect.left
+    const ptrY = event.clientY - canvasRect.top
+
+    // Keep the originally grabbed point under the cursor.
+    // Translation = pointer - canvasCenter - grabbedOffset.
+    let displayX = ptrX - canvasRect.width / 2
+    let displayY = ptrY - canvasRect.height / 2
+    if (patternGrab.value) {
+      displayX = displayX - patternGrab.value.pointerDx
+      displayY = displayY - patternGrab.value.pointerDy
+    }
+
+    displayX = Math.round(displayX)
+    displayY = Math.round(displayY)
+
+    draggedPlacedAsset.value.x = displayX
+    draggedPlacedAsset.value.y = displayY
+    patternBackground.value.x = displayX
+    patternBackground.value.y = displayY
+
+    // still allow trash hover feedback
+    if (trashRef.value) {
+      const trashRect = trashRef.value.getBoundingClientRect()
+      const w = draggedPlacedAsset.value.renderW || 0
+      const h = draggedPlacedAsset.value.renderH || 0
+      const assetRect = {
+        left: canvasRect.left + displayX,
+        top: canvasRect.top + displayY,
+        right: canvasRect.left + displayX + w,
+        bottom: canvasRect.top + displayY + h,
+      }
+      const intersects = !(
+        assetRect.right < trashRect.left ||
+        assetRect.left > trashRect.right ||
+        assetRect.bottom < trashRect.top ||
+        assetRect.top > trashRect.bottom
+      )
+      draggedOverTrash.value = intersects
+    }
+    return
+  }
 
   // mark that we're moving an asset (used to suppress click->rotate after drag)
   draggedDuringInteraction.value = true
@@ -810,6 +1004,17 @@ const onCanvasMouseMove = (event) => {
 
   draggedPlacedAsset.value.x = displayX
   draggedPlacedAsset.value.y = displayY
+
+  // Keep Pattern finder sliders in sync when dragging the big background
+  if (
+    editorMode.value === 'pattern' &&
+    draggedPlacedAsset.value.renderW &&
+    draggedPlacedAsset.value.renderH
+  ) {
+    patternBackground.value.x = displayX
+    patternBackground.value.y = displayY
+    // rotation/scale are controlled by sliders; leave them as-is
+  }
 
   // Check intersection with trash while dragging a placed asset
   if (trashRef.value) {
@@ -889,6 +1094,48 @@ const onCanvasMouseUp = (event) => {
       }
     }
     const asset = draggedPlacedAsset.value
+
+    // Pattern finder background: keep free-drag position (no snapping)
+    if (editorMode.value === 'pattern' && asset.renderW && asset.renderH) {
+      // record previous state before finalizing the move so undo can revert
+      pushHistory()
+      patternBackground.value.x = asset.x || 0
+      patternBackground.value.y = asset.y || 0
+      patternGrab.value = null
+      // stop dragging-out mode
+      dragActive.value = false
+      if (draggedDuringInteraction.value) {
+        justDragged.value = true
+        setTimeout(() => (justDragged.value = false), 250)
+      }
+      draggedDuringInteraction.value = false
+
+      draggedPlacedAsset.value = null
+      trashVisible.value = false
+      draggedOverTrash.value = false
+      draggedElement.value = null
+      // remove global listeners if added
+      if (moveListenersAdded.value) {
+        try {
+          if (_globalMoveHandler.fn) window.removeEventListener('mousemove', _globalMoveHandler.fn)
+          if (_globalUpHandler.fn) window.removeEventListener('mouseup', _globalUpHandler.fn)
+          if (_globalPointerMoveHandler.fn)
+            window.removeEventListener('pointermove', _globalPointerMoveHandler.fn)
+          if (_globalPointerUpHandler.fn)
+            window.removeEventListener('pointerup', _globalPointerUpHandler.fn)
+          if (_globalPointerUpHandler.fn)
+            window.removeEventListener('pointercancel', _globalPointerUpHandler.fn)
+        } catch (e) {
+          console.warn('error removing global move listeners', e)
+        }
+        _globalMoveHandler.fn = null
+        _globalUpHandler.fn = null
+        _globalPointerMoveHandler.fn = null
+        _globalPointerUpHandler.fn = null
+        moveListenersAdded.value = false
+      }
+      return
+    }
     // Prefer snapping to the last computed snap anchor (from lastSnap) so the
     // final placement respects the snap mode. However, avoid large jumps that
     // surprise the user: only apply snap if the snap displacement is within a
@@ -2307,6 +2554,88 @@ const randomizePattern = () => {
           <button class="svgupload cursor-pointer" @click.prevent="openUploadSvgPicker">
             + Upload SVG
           </button>
+
+          <h2 class="font-object font-medium text-base mt-10">Background controls</h2>
+
+          <div class="mt-3">
+            <div class="font-object text-xs mb-1 text-gray-700">
+              Scale: {{ patternBackground.scale.toFixed(2) }}
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="3"
+              step="0.01"
+              v-model.number="patternBackground.scale"
+              class="slider w-[95%]"
+              @input="
+                () => {
+                  const bg = backgroundImages[0]
+                  if (bg && bg.renderW && bg.renderH) bg.scale = patternBackground.scale
+                }
+              "
+            />
+          </div>
+
+          <div class="mt-4">
+            <div class="font-object text-xs mb-1 text-gray-700">
+              X: {{ Math.round(patternBackground.x) }}
+            </div>
+            <input
+              type="range"
+              min="-6000"
+              max="6000"
+              step="1"
+              v-model.number="patternBackground.x"
+              class="slider w-[95%]"
+              @input="
+                () => {
+                  const bg = backgroundImages[0]
+                  if (bg && bg.renderW && bg.renderH) bg.x = patternBackground.x
+                }
+              "
+            />
+          </div>
+
+          <div class="mt-4">
+            <div class="font-object text-xs mb-1 text-gray-700">
+              Y: {{ Math.round(patternBackground.y) }}
+            </div>
+            <input
+              type="range"
+              min="-6000"
+              max="6000"
+              step="1"
+              v-model.number="patternBackground.y"
+              class="slider w-[95%]"
+              @input="
+                () => {
+                  const bg = backgroundImages[0]
+                  if (bg && bg.renderW && bg.renderH) bg.y = patternBackground.y
+                }
+              "
+            />
+          </div>
+
+          <div class="mt-4">
+            <div class="font-object text-xs mb-1 text-gray-700">
+              Rotation: {{ Math.round(patternBackground.rotation) }}°
+            </div>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              v-model.number="patternBackground.rotation"
+              class="slider w-[95%]"
+              @input="
+                () => {
+                  const bg = backgroundImages[0]
+                  if (bg && bg.renderW && bg.renderH) bg.rotation = patternBackground.rotation
+                }
+              "
+            />
+          </div>
         </div>
       </div>
       <!-- Uploaded images section (sandbox only) -->
@@ -2431,7 +2760,39 @@ const randomizePattern = () => {
             @drop.stop.prevent="onOverlayDrop"
           >
             <template v-for="img in backgroundImages" :key="img.id">
+              <!-- Pattern finder background SVG: render as a tinted mask so it's always visible -->
+              <div
+                v-if="img.renderW && img.renderH && (img.dataUrl || img.path)"
+                class="placed-asset-shape"
+                draggable="false"
+                :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
+                :data-id="img.id"
+                @click="onAssetClick(img, $event)"
+                :style="{
+                  left: canvasCenterCss.left,
+                  top: canvasCenterCss.top,
+                  width: img.renderW + 'px',
+                  height: img.renderH + 'px',
+                  background: selectedAssetColor,
+                  WebkitMaskImage: `url(${img.dataUrl || img.path})`,
+                  maskImage: `url(${img.dataUrl || img.path})`,
+                  WebkitMaskSize: 'contain',
+                  maskSize: 'contain',
+                  WebkitMaskRepeat: 'no-repeat',
+                  maskRepeat: 'no-repeat',
+                  WebkitMaskPosition: 'center',
+                  maskPosition: 'center',
+                  // Keep pivot locked to the visible canvas center.
+                  // x/y are translation offsets from that center.
+                  transform: `translate(-50%, -50%) translate(${img.x || 0}px, ${img.y || 0}px) rotate(${img.rotation || 0}deg) scale(${img.scale || 1})`,
+                  transformOrigin: 'center center',
+                  opacity: 1,
+                }"
+              />
+
+              <!-- Normal uploaded images: render as images (existing behavior) -->
               <img
+                v-else
                 class="placed-asset-shape placed-uploaded"
                 draggable="false"
                 :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
@@ -2440,8 +2801,8 @@ const randomizePattern = () => {
                 :alt="img.name"
                 @click="onAssetClick(img, $event)"
                 :style="{
-                  left: img.x + 'px',
-                  top: img.y + 'px',
+                  left: (img.x || 0) + 'px',
+                  top: (img.y || 0) + 'px',
                   width: getAssetPixelSize(img) + 'px',
                   height: getAssetPixelSize(img) + 'px',
                   transform: `rotate(${img.rotation || 0}deg)`,
