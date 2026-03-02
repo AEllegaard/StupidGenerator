@@ -319,6 +319,15 @@ body {
   mask-position: center;
 }
 
+/* Pattern finder: big uploaded SVG background.
+   Ensure scaling/rotation always pivot around the element center.
+   (Some browsers can behave oddly with inline transformOrigin in combination
+   with translate(-50%, -50%) + masks unless we also set it in CSS.) */
+.pattern-bg-shape {
+  transform-origin: center center;
+  will-change: transform;
+}
+
 .placed-asset-shape:active {
   cursor: grabbing;
 }
@@ -478,10 +487,10 @@ body {
   width: 60%;
 }
 
-.pattern-randomizer{
+.pattern-randomizer {
   width: 95%;
 }
-.uploadimg{
+.uploadimg {
   width: 95%;
 }
 .mode-toggle {
@@ -493,7 +502,6 @@ body {
   border-radius: 6px;
   overflow: hidden;
 }
-
 
 .mode-toggle-btn {
   padding: 6px 4px;

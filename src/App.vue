@@ -144,8 +144,49 @@ const removeUploadedSvgAsset = (asset) => {
 // Pattern finder: focuses on the Pattern Randomizer workflow.
 const editorMode = ref('sandbox') // 'sandbox' | 'pattern'
 
+// Keep the Pattern finder background SVG around, but don't show it in Sandbox.
+// We'll store the last pattern background object here when switching away.
+const patternBackgroundStash = ref(null)
+
 const setEditorMode = (mode) => {
   if (mode !== 'sandbox' && mode !== 'pattern') return
+
+  // Switching between modes should not allow the Pattern background to sit under
+  // Sandbox assets (but it should come back when returning to Pattern finder).
+  if (editorMode.value === 'pattern' && mode === 'sandbox') {
+    // stash pattern background (the one with renderW/renderH) and remove it from canvas
+    const idx = backgroundImages.value.findIndex((img) => img && img.renderW && img.renderH)
+    if (idx !== -1) {
+      patternBackgroundStash.value = backgroundImages.value[idx]
+      backgroundImages.value.splice(idx, 1)
+    }
+  } else if (editorMode.value === 'sandbox' && mode === 'pattern') {
+    // When returning to Pattern finder, clear anything made in Sandbox so it
+    // doesn't sit on top of the pattern background.
+    // Keep only the Pattern background (stored separately in the stash).
+    try {
+      placedAssets.value = []
+    } catch (e) {
+      // ignore
+    }
+
+    // Remove any background images that are NOT the Pattern background.
+    // (Pattern background is identified by renderW/renderH and is restored below)
+    try {
+      backgroundImages.value = (backgroundImages.value || []).filter(
+        (img) => img && img.renderW && img.renderH,
+      )
+    } catch (e) {
+      // ignore
+    }
+
+    // restore stashed pattern background if not already present
+    const exists = backgroundImages.value.some((img) => img && img.renderW && img.renderH)
+    if (!exists && patternBackgroundStash.value) {
+      backgroundImages.value.unshift(patternBackgroundStash.value)
+    }
+  }
+
   editorMode.value = mode
 }
 
@@ -649,6 +690,46 @@ const dragOffset = ref({ x: 0, y: 0 })
 // Everything is in *rendered canvas CSS pixels*.
 const patternGrab = ref(null) // { localX, localY, startX, startY, startScale, startRotation }
 
+// Pattern finder: when scaling the big uploaded SVG background, keep the pivot
+// locked to the visible canvas center (50%/50%).
+// If the user is currently dragging (patternGrab is set), use the grabbed local
+// point to keep that exact point under the cursor stable too.
+const updatePatternBackgroundScale = (newScale) => {
+  const bg = (backgroundImages.value || []).find((img) => img && img.renderW && img.renderH)
+  if (!bg) return
+
+  const prevScale = Number(bg.scale || 1) || 1
+  const nextScale = Number(newScale || 1) || 1
+  if (!Number.isFinite(prevScale) || !Number.isFinite(nextScale) || prevScale === nextScale) return
+
+  // Keep the visual pivot fixed by shifting translation when scale changes.
+  // Model: element is centered at canvas center with translation (x,y).
+  // Scaling around element center would move a local point: delta = local * (s2 - s1).
+  // We compensate by adjusting translation by -rotate(local*(s2-s1), rotation).
+  const rot = Number(bg.rotation || 0)
+  const local = patternGrab.value
+    ? { x: Number(patternGrab.value.localX || 0), y: Number(patternGrab.value.localY || 0) }
+    : { x: 0, y: 0 }
+
+  const diff = {
+    x: local.x * (nextScale - prevScale),
+    y: local.y * (nextScale - prevScale),
+  }
+  const screen = rotatePoint(diff.x, diff.y, rot)
+
+  const nextX = Math.round((Number(bg.x || 0) || 0) - screen.x)
+  const nextY = Math.round((Number(bg.y || 0) || 0) - screen.y)
+
+  bg.scale = nextScale
+  bg.x = nextX
+  bg.y = nextY
+
+  // keep UI model in sync
+  patternBackground.value.scale = nextScale
+  patternBackground.value.x = nextX
+  patternBackground.value.y = nextY
+}
+
 // Rotate the point (x,y) by angleDeg around origin.
 const rotatePoint = (x, y, angleDeg) => {
   const a = (Number(angleDeg) || 0) * (Math.PI / 180)
@@ -1130,7 +1211,22 @@ const onCanvasMouseUp = (event) => {
       pushHistory()
       patternBackground.value.x = asset.x || 0
       patternBackground.value.y = asset.y || 0
+      // Rebase pivot after drop: any subsequent scale should be around the
+      // visible canvas center, not around the last grabbed point.
+      // Clearing patternGrab ensures updatePatternBackgroundScale uses local=(0,0)
+      // which represents the element center.
       patternGrab.value = null
+      try {
+        const bg = (backgroundImages.value || []).find((img) => img && img.renderW && img.renderH)
+        if (bg) {
+          bg.x = patternBackground.value.x
+          bg.y = patternBackground.value.y
+          bg.scale = patternBackground.value.scale
+          bg.rotation = patternBackground.value.rotation
+        }
+      } catch (e) {
+        // ignore
+      }
       // stop dragging-out mode
       dragActive.value = false
       if (draggedDuringInteraction.value) {
@@ -2599,8 +2695,7 @@ const randomizePattern = () => {
               class="slider w-[95%]"
               @input="
                 () => {
-                  const bg = backgroundImages[0]
-                  if (bg && bg.renderW && bg.renderH) bg.scale = patternBackground.scale
+                  updatePatternBackgroundScale(patternBackground.scale)
                 }
               "
             />
@@ -2792,7 +2887,7 @@ const randomizePattern = () => {
               <!-- Pattern finder background SVG: render as a tinted mask so it's always visible -->
               <div
                 v-if="img.renderW && img.renderH && (img.dataUrl || img.path)"
-                class="placed-asset-shape"
+                class="placed-asset-shape pattern-bg-shape"
                 draggable="false"
                 :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
                 :data-id="img.id"
