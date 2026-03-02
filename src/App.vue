@@ -49,6 +49,72 @@ const assets = [
   },
 ]
 
+// User-uploaded SVG assets (treated the same as the predefined assets).
+// Stored as data URLs so they work offline and don't require server storage.
+const uploadedSvgAssets = ref([]) // [{ name, path, dataUrl, isUploadedSvg: true }]
+
+// File input ref for uploading SVG assets
+const uploadSvgInputRef = ref(null)
+
+const onUploadSvgAsset = (e) => {
+  const files = e?.target?.files
+  if (!files || !files.length) return
+
+  for (const file of files) {
+    // Basic guard: accept only SVGs (both by mime and extension fallback)
+    const isSvg = file.type === 'image/svg+xml' || (file.name || '').toLowerCase().endsWith('.svg')
+    if (!isSvg) continue
+
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const dataUrl = ev?.target?.result
+      if (!dataUrl) return
+
+      const baseName = (file.name || 'Uploaded SVG').replace(/\.svg$/i, '')
+      // Ensure unique display names in the palette
+      let name = baseName
+      let i = 2
+      const exists = (n) =>
+        assets.some((a) => a.name === n) || uploadedSvgAssets.value.some((a) => a.name === n)
+      while (exists(name)) {
+        name = `${baseName} ${i}`
+        i++
+      }
+
+      uploadedSvgAssets.value.push({
+        name,
+        path: dataUrl,
+        dataUrl,
+        isUploadedSvg: true,
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  // reset so the same file can be re-uploaded if needed
+  e.target.value = ''
+}
+
+const removeUploadedSvgAsset = (asset) => {
+  const idx = uploadedSvgAssets.value.indexOf(asset)
+  if (idx !== -1) uploadedSvgAssets.value.splice(idx, 1)
+}
+
+// Asset palette: click to spawn centered.
+const onPaletteAssetClick = (asset) => {
+  if (!asset) return
+  spawnAssetCentered(asset)
+}
+
+// Combined asset pool used by the pattern generator.
+// Includes both predefined assets and user-uploaded SVG assets.
+const generatorAssets = computed(() => {
+  // Filter out any falsy entries just in case.
+  return [...assets, ...(uploadedSvgAssets.value || [])].filter(Boolean)
+})
+
+// (no disable/enable feature) All assets can be used by the generator.
+
 const currentCanvasPreset = ref(canvasDimensions[0])
 const gridSize = ref(5)
 const placedAssets = ref([]) // Array to store placed assets on canvas
@@ -1608,6 +1674,9 @@ const randomizePattern = () => {
       )
     }
 
+    const pool = generatorAssets.value
+    if (!pool || !pool.length) return
+
     if (patternMode.value === 'checkerboard') {
       // Create a checkerboard/tiling pattern where cells alternate between 1x and 2x.
       // We iterate cells top-left to bottom-right and place tiles, reserving 2x blocks
@@ -1618,7 +1687,7 @@ const randomizePattern = () => {
       // random parity so repeated clicks produce different checkerboard offsets
       const parity = Math.random() < 0.5 ? 0 : 1
       // Choose a dominant asset for this run to create visual coherence
-      const dominantAsset = assets[Math.floor(Math.random() * assets.length)]
+      const dominantAsset = pool[Math.floor(Math.random() * pool.length)]
       const dominantBias = 0.22 // chance to pick the dominant asset (reduced to avoid repetition)
       const repeatBias = 0.08 // smaller chance to repeat last placed asset
       let lastChosen = null
@@ -1665,7 +1734,7 @@ const randomizePattern = () => {
           } else if (lastChosen && r < dominantBias + repeatBias) {
             a = lastChosen
           } else {
-            a = assets[Math.floor(Math.random() * assets.length)]
+            a = pool[Math.floor(Math.random() * pool.length)]
           }
 
           // avoid long runs of the same asset: if we've already placed the same
@@ -1676,7 +1745,7 @@ const randomizePattern = () => {
             lastChosenCount = 0
           }
           if (lastChosenCount >= 2) {
-            const alternatives = assets.filter((it) => it !== lastChosen)
+            const alternatives = pool.filter((it) => it !== lastChosen)
             if (alternatives.length)
               a = alternatives[Math.floor(Math.random() * alternatives.length)]
             lastChosenCount = 0
@@ -1834,7 +1903,7 @@ const randomizePattern = () => {
 
           // pick a random asset from palette
           // small chance to favor a recent asset for some clustering
-          const a = assets[Math.floor(Math.random() * assets.length)]
+          const a = pool[Math.floor(Math.random() * pool.length)]
           if (!a) continue
 
           // Base cell origin; may be adjusted later if we pick a 2x candidate.
@@ -2116,6 +2185,23 @@ const randomizePattern = () => {
           >
             x2
           </button>
+
+          <!-- Hidden real file input for uploading SVG assets -->
+          <input
+            ref="uploadSvgInputRef"
+            type="file"
+            accept="image/svg+xml,.svg"
+            multiple
+            class="hidden"
+            @change="onUploadSvgAsset"
+          />
+
+          <button
+            class="uploadbutton savebutton font-object font-regular px-2 border-2 rounded cursor-pointer"
+            @click.prevent="uploadSvgInputRef.click()"
+          >
+            + Upload asset
+          </button>
         </div>
         <div class="assets-container grid grid-cols-4 mb-4">
           <div
@@ -2124,15 +2210,38 @@ const randomizePattern = () => {
             draggable="true"
             @dragstart="startDrag(asset, $event)"
             @dragend="onDragEnd"
-            @click.prevent="spawnAssetCentered(asset)"
-            class="asset-button"
+            @click.prevent="onPaletteAssetClick(asset)"
+            class="asset-button relative"
             :title="asset.name"
           >
             <img :src="asset.path" :alt="asset.name" class="asset-icon" />
           </div>
         </div>
+
+        <!-- Uploaded SVG assets (same behavior as predefined assets) -->
+        <div v-if="uploadedSvgAssets.length" class="assets-container grid grid-cols-4 mb-4">
+          <div
+            v-for="asset in uploadedSvgAssets"
+            :key="asset.name + asset.path"
+            draggable="true"
+            @dragstart="startDrag(asset, $event)"
+            @dragend="onDragEnd"
+            @click.prevent="onPaletteAssetClick(asset)"
+            class="asset-button uploaded-thumb relative"
+            :title="asset.name"
+          >
+            <img :src="asset.path" :alt="asset.name" class="asset-icon" />
+            <button
+              class="remove-uploaded"
+              @click.stop="removeUploadedSvgAsset(asset)"
+              title="Remove"
+            >
+              ×
+            </button>
+          </div>
+        </div>
         <button
-          class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer"
+          class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 rounded cursor-pointer"
           @click.prevent="randomizePattern"
         >
           Pattern Randomizer
@@ -2197,7 +2306,7 @@ const randomizePattern = () => {
 
         <!-- Styled upload button matching other buttons -->
         <button
-          class="savebutton font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer mb-3"
+          class="savebutton uploadimg font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer mb-3"
           @click.prevent="uploadInputRef.click()"
         >
           + Upload image

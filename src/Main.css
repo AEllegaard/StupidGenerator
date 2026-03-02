@@ -192,6 +192,7 @@ body {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+  width: 95%;
 }
 
 .color-button {
@@ -435,7 +436,7 @@ body {
   --scrollbar-track: #ffffff; /* track / background */
   --scrollbar-thumb: #888888; /* thumb (handle) color */
   --scrollbar-thumb-hover: #000000; /* thumb color on hover */
-  --scrollbar-radius: 8px; /* thumb roundness */
+  --scrollbar-radius: 3px; /* thumb roundness */
 }
 
 /* Utility class: apply this to any element that should get the custom scrollbar */
@@ -473,7 +474,13 @@ body {
   background: var(--scrollbar-thumb-hover);
 }
 
-/* Small note for macOS: system overlay scrollbars may be hidden until scroll.
-   This is a platform behavior — to test visuals, try in Chrome on desktop
-   or temporarily change macOS System Preferences -> General -> Show scroll
-   bars -> Always. */
+.uploadbutton {
+  width: 60%;
+}
+
+.pattern-randomizer{
+  width: 95%;
+}
+.uploadimg{
+  width: 95%;
+}
