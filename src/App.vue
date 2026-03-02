@@ -100,6 +100,16 @@ const removeUploadedSvgAsset = (asset) => {
   if (idx !== -1) uploadedSvgAssets.value.splice(idx, 1)
 }
 
+// --- Editor mode ------------------------------------------------------
+// Sandbox: manual placement via palette clicks/drag.
+// Pattern finder: focuses on the Pattern Randomizer workflow.
+const editorMode = ref('sandbox') // 'sandbox' | 'pattern'
+
+const setEditorMode = (mode) => {
+  if (mode !== 'sandbox' && mode !== 'pattern') return
+  editorMode.value = mode
+}
+
 // Asset palette: click to spawn centered.
 const onPaletteAssetClick = (asset) => {
   if (!asset) return
@@ -2119,7 +2129,27 @@ const randomizePattern = () => {
     <!-- UI Section -->
     <div class="bg-white m-1 sidebar">
       <h1 class="font-object font-bold text-xl ml-3 mt-1">Stupid Generator</h1>
-      <!-- Generator type removed -->
+      <div class="ml-3 mt-3 toggle-container font-object font-regular">
+        <div class="mode-toggle" role="tablist" aria-label="Mode">
+          <button
+            type="button"
+            class="mode-toggle-btn"
+            :class="{ active: editorMode === 'sandbox' }"
+            @click="setEditorMode('sandbox')"
+          >
+            Sandbox
+          </button>
+          <button
+            type="button"
+            class="mode-toggle-btn"
+            :class="{ active: editorMode === 'pattern' }"
+            @click="setEditorMode('pattern')"
+          >
+            Pattern finder
+          </button>
+        </div>
+      </div>
+
       <div class="ml-3 mt-8">
         <div class="font-object font-medium text-base">Canvas presets</div>
         <select
@@ -2170,82 +2200,101 @@ const randomizePattern = () => {
         </div>
 
         <h2 class="font-object font-medium text-base mt-10">Assets</h2>
-        <p class="font-object text-xs mb-4 text-gray-500">Click to spawn centered. Drag to move.</p>
-        <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
-        <div class="flex gap-2 mb-4">
-          <button
-            @click="changeAssetSize(1)"
-            :class="['sizebutton px-2 border-2 cursor-pointer', { active: assetMultiplier === 1 }]"
-          >
-            x1
-          </button>
-          <button
-            @click="changeAssetSize(2)"
-            :class="['sizebutton px-2 border-2 cursor-pointer', { active: assetMultiplier === 2 }]"
-          >
-            x2
-          </button>
 
-          <!-- Hidden real file input for uploading SVG assets -->
-          <input
-            ref="uploadSvgInputRef"
-            type="file"
-            accept="image/svg+xml,.svg"
-            multiple
-            class="hidden"
-            @change="onUploadSvgAsset"
-          />
-
-          <button
-            class="uploadbutton savebutton font-object font-regular px-2 border-2 rounded cursor-pointer"
-            @click.prevent="uploadSvgInputRef.click()"
-          >
-            + Upload asset
-          </button>
-        </div>
-        <div class="assets-container grid grid-cols-4 mb-4">
-          <div
-            v-for="asset in assets"
-            :key="asset.name"
-            draggable="true"
-            @dragstart="startDrag(asset, $event)"
-            @dragend="onDragEnd"
-            @click.prevent="onPaletteAssetClick(asset)"
-            class="asset-button relative"
-            :title="asset.name"
-          >
-            <img :src="asset.path" :alt="asset.name" class="asset-icon" />
-          </div>
-        </div>
-
-        <!-- Uploaded SVG assets (same behavior as predefined assets) -->
-        <div v-if="uploadedSvgAssets.length" class="assets-container grid grid-cols-4 mb-4">
-          <div
-            v-for="asset in uploadedSvgAssets"
-            :key="asset.name + asset.path"
-            draggable="true"
-            @dragstart="startDrag(asset, $event)"
-            @dragend="onDragEnd"
-            @click.prevent="onPaletteAssetClick(asset)"
-            class="asset-button uploaded-thumb relative"
-            :title="asset.name"
-          >
-            <img :src="asset.path" :alt="asset.name" class="asset-icon" />
+        <!-- Sandbox mode: manual palette placement -->
+        <div v-if="editorMode === 'sandbox'">
+          <p class="font-object text-xs mb-4 text-gray-500">
+            Click to spawn centered. Drag to move.
+          </p>
+          <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
+          <div class="flex gap-2 mb-4">
             <button
-              class="remove-uploaded"
-              @click.stop="removeUploadedSvgAsset(asset)"
-              title="Remove"
+              @click="changeAssetSize(1)"
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer',
+                { active: assetMultiplier === 1 },
+              ]"
             >
-              ×
+              x1
+            </button>
+            <button
+              @click="changeAssetSize(2)"
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer',
+                { active: assetMultiplier === 2 },
+              ]"
+            >
+              x2
+            </button>
+
+            <!-- Hidden real file input for uploading SVG assets -->
+            <input
+              ref="uploadSvgInputRef"
+              type="file"
+              accept="image/svg+xml,.svg"
+              multiple
+              class="hidden"
+              @change="onUploadSvgAsset"
+            />
+
+            <button
+              class="uploadbutton savebutton font-object font-regular px-2 border-2 rounded cursor-pointer"
+              @click.prevent="uploadSvgInputRef.click()"
+            >
+              + Upload asset
             </button>
           </div>
+          <div class="assets-container grid grid-cols-4 mb-4">
+            <div
+              v-for="asset in assets"
+              :key="asset.name"
+              draggable="true"
+              @dragstart="startDrag(asset, $event)"
+              @dragend="onDragEnd"
+              @click.prevent="onPaletteAssetClick(asset)"
+              class="asset-button relative"
+              :title="asset.name"
+            >
+              <img :src="asset.path" :alt="asset.name" class="asset-icon" />
+            </div>
+          </div>
+
+          <!-- Uploaded SVG assets (same behavior as predefined assets) -->
+          <div v-if="uploadedSvgAssets.length" class="assets-container grid grid-cols-4 mb-4">
+            <div
+              v-for="asset in uploadedSvgAssets"
+              :key="asset.name + asset.path"
+              draggable="true"
+              @dragstart="startDrag(asset, $event)"
+              @dragend="onDragEnd"
+              @click.prevent="onPaletteAssetClick(asset)"
+              class="asset-button uploaded-thumb relative"
+              :title="asset.name"
+            >
+              <img :src="asset.path" :alt="asset.name" class="asset-icon" />
+              <button
+                class="remove-uploaded"
+                @click.stop="removeUploadedSvgAsset(asset)"
+                title="Remove"
+              >
+                ×
+              </button>
+            </div>
+          </div>
         </div>
-        <button
-          class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 rounded cursor-pointer"
-          @click.prevent="randomizePattern"
-        >
-          Pattern Randomizer
-        </button>
+
+        <!-- Pattern finder mode: generator-first -->
+        <div v-else class="mt-2">
+          <p class="font-object text-xs mb-4 text-gray-500">
+            Click to generate a pattern using all available assets.
+          </p>
+          <button
+            class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%]"
+            @click.prevent="randomizePattern"
+          >
+            Pattern Randomizer
+          </button>
+        </div>
       </div>
       <!-- Uploaded images section -->
       <div class="ml-3 mt-4">
@@ -2444,4 +2493,6 @@ const randomizePattern = () => {
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+
+</style>

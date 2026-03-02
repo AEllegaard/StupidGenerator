@@ -484,3 +484,31 @@ body {
 .uploadimg{
   width: 95%;
 }
+.mode-toggle {
+  width: 95%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: #000000 1px solid;
+  border-color: rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mode-toggle-btn {
+  padding: 6px 4px;
+  font-family: inherit;
+  font-size: 14px;
+  background: transparent;
+  color: #111827;
+  cursor: pointer;
+}
+
+.mode-toggle-btn.active {
+  background: #111827;
+  color: #ffffff;
+}
+
+.mode-toggle-btn:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
