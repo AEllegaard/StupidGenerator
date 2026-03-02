@@ -494,6 +494,7 @@ body {
   overflow: hidden;
 }
 
+
 .mode-toggle-btn {
   padding: 6px 4px;
   font-family: inherit;
@@ -511,4 +512,19 @@ body {
 .mode-toggle-btn:focus-visible {
   outline: 2px solid #111827;
   outline-offset: 2px;
+}
+
+.svgupload {
+  width: 95%;
+  background: transparent;
+  color: #111;
+  border: #000000 1px solid;
+  border-color: rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.svgupload:hover {
+  background-color: rgba(0, 0, 0, 0.12);
 }

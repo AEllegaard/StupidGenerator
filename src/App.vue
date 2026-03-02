@@ -110,6 +110,12 @@ const setEditorMode = (mode) => {
   editorMode.value = mode
 }
 
+const openUploadSvgPicker = () => {
+  // Vue template refs point to the DOM element on `.value`
+  const el = uploadSvgInputRef.value
+  if (el && typeof el.click === 'function') el.click()
+}
+
 // Asset palette: click to spawn centered.
 const onPaletteAssetClick = (asset) => {
   if (!asset) return
@@ -2128,7 +2134,7 @@ const randomizePattern = () => {
   <div class="w-full h-screen maingrid">
     <!-- UI Section -->
     <div class="bg-white m-1 sidebar">
-      <h1 class="font-object font-bold text-xl ml-3 mt-1">Stupid Generator</h1>
+      <h1 class="font-object font-bold text-xl ml-3 mb-4 mt-1">Stupid Generator</h1>
       <div class="ml-3 mt-3 toggle-container font-object font-regular">
         <div class="mode-toggle" role="tablist" aria-label="Mode">
           <button
@@ -2162,10 +2168,12 @@ const randomizePattern = () => {
           </option>
         </select>
 
-        <h2 class="font-object font-medium text-base mt-8">Grid size</h2>
-        <div class="slidecontainer gridsize">
-          <input type="range" min="2" max="10" v-model="gridSize" class="slider" id="myRange" />
-          <p class="font-object text-sm mt-1">{{ gridSize }}</p>
+        <div v-if="editorMode === 'sandbox'">
+          <h2 class="font-object font-medium text-base mt-8">Grid size</h2>
+          <div class="slidecontainer gridsize">
+            <input type="range" min="2" max="10" v-model="gridSize" class="slider" id="myRange" />
+            <p class="font-object text-sm mt-1">{{ gridSize }}</p>
+          </div>
         </div>
 
         <h2 class="font-object font-medium text-base mt-10">Colors</h2>
@@ -2199,10 +2207,19 @@ const randomizePattern = () => {
           </button>
         </div>
 
-        <h2 class="font-object font-medium text-base mt-10">Assets</h2>
+        <!-- Hidden real file input for uploading SVG assets (always rendered so both modes can open the picker) -->
+        <input
+          ref="uploadSvgInputRef"
+          type="file"
+          accept="image/svg+xml,.svg"
+          multiple
+          class="hidden"
+          @change="onUploadSvgAsset"
+        />
 
-        <!-- Sandbox mode: manual palette placement -->
+        <!-- Sandbox-only UI: assets palette + pattern randomizer -->
         <div v-if="editorMode === 'sandbox'">
+          <h2 class="font-object font-medium text-base mt-10">Assets</h2>
           <p class="font-object text-xs mb-4 text-gray-500">
             Click to spawn centered. Drag to move.
           </p>
@@ -2227,19 +2244,9 @@ const randomizePattern = () => {
               x2
             </button>
 
-            <!-- Hidden real file input for uploading SVG assets -->
-            <input
-              ref="uploadSvgInputRef"
-              type="file"
-              accept="image/svg+xml,.svg"
-              multiple
-              class="hidden"
-              @change="onUploadSvgAsset"
-            />
-
             <button
               class="uploadbutton savebutton font-object font-regular px-2 border-2 rounded cursor-pointer"
-              @click.prevent="uploadSvgInputRef.click()"
+              @click.prevent="openUploadSvgPicker"
             >
               + Upload asset
             </button>
@@ -2281,13 +2288,7 @@ const randomizePattern = () => {
               </button>
             </div>
           </div>
-        </div>
 
-        <!-- Pattern finder mode: generator-first -->
-        <div v-else class="mt-2">
-          <p class="font-object text-xs mb-4 text-gray-500">
-            Click to generate a pattern using all available assets.
-          </p>
           <button
             class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%]"
             @click.prevent="randomizePattern"
@@ -2295,9 +2296,21 @@ const randomizePattern = () => {
             Pattern Randomizer
           </button>
         </div>
+
+        <!-- Pattern finder-only UI -->
+        <div v-else class="mt-10">
+          <!-- pattern finder content goes here -->
+          <h2 class="font-object font-medium text-base mt-10">Upload SVG</h2>
+          <p class="font-object text-xs mb-3 text-gray-500">
+            Upload svg to be able to drag around.
+          </p>
+          <button class="svgupload cursor-pointer" @click.prevent="openUploadSvgPicker">
+            + Upload SVG
+          </button>
+        </div>
       </div>
-      <!-- Uploaded images section -->
-      <div class="ml-3 mt-4">
+      <!-- Uploaded images section (sandbox only) -->
+      <div v-if="editorMode === 'sandbox'" class="ml-3 mt-4">
         <h2 class="font-object font-medium text-base mt-10">Upload image</h2>
         <p class="font-object text-xs mb-3 text-gray-500">
           Click to upload, drag to add, <strong>hold alt/option down and drag to move.</strong>
@@ -2384,10 +2397,10 @@ const randomizePattern = () => {
       <div class="ml-3 mt-8">
         <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
         <div class="flex gap-2 mb-4">
-          <button class="savebutton px-2" @click.prevent="exportAsPDF">PDF</button>
-          <button class="savebutton px-2" @click.prevent="exportAsSVG">SVG</button>
-          <button class="savebutton px-2" @click.prevent="exportAsPNG">PNG</button>
-          <button class="savebutton px-2" @click.prevent="exportAsJPG">JPG</button>
+          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
+          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
+          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsPNG">PNG</button>
+          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsJPG">JPG</button>
         </div>
       </div>
     </div>
@@ -2493,6 +2506,4 @@ const randomizePattern = () => {
   </div>
 </template>
 
-<style scoped>
-
-</style>
+<style scoped></style>
