@@ -647,7 +647,18 @@ const dragOffset = ref({ x: 0, y: 0 })
 // Pattern finder: keep the dragged SVG under the cursor even when scale/rotation
 // change by recording where on the SVG the user grabbed it.
 // Everything is in *rendered canvas CSS pixels*.
-const patternGrab = ref(null) // { pointerDx, pointerDy, startX, startY, startScale, startRotation }
+const patternGrab = ref(null) // { localX, localY, startX, startY, startScale, startRotation }
+
+// Rotate the point (x,y) by angleDeg around origin.
+const rotatePoint = (x, y, angleDeg) => {
+  const a = (Number(angleDeg) || 0) * (Math.PI / 180)
+  const cos = Math.cos(a)
+  const sin = Math.sin(a)
+  return {
+    x: x * cos - y * sin,
+    y: x * sin + y * cos,
+  }
+}
 
 // Pattern finder: we keep the pivot locked to the canvas center.
 // During drag we simply update translation offsets (x/y). These offsets are stored
@@ -708,19 +719,28 @@ const startMovingAsset = (asset, event, el = null) => {
       const tx = asset.x || 0
       const ty = asset.y || 0
 
+      const rot = Number(asset.rotation || 0)
+      const scale = Number(asset.scale || 1) || 1
+
       // Compute pointer position relative to the SVG's *current* center.
       // SVG center is always canvas center + translation.
       const dx = ptrX - (canvasRect.width / 2 + tx)
       const dy = ptrY - (canvasRect.height / 2 + ty)
 
+      // Store grabbed offset in the SVG's local (unrotated/unscaled) space.
+      // This makes dragging stable even after rotation/scale changes.
+      const unrot = rotatePoint(dx, dy, -rot)
+      const localX = unrot.x / scale
+      const localY = unrot.y / scale
+
       patternGrab.value = {
-        // Store grabbed offset in screen px (same unit as x/y)
-        pointerDx: dx,
-        pointerDy: dy,
+        // Stored in local object space
+        localX,
+        localY,
         startX: tx,
         startY: ty,
-        startScale: asset.scale || 1,
-        startRotation: asset.rotation || 0,
+        startScale: scale,
+        startRotation: rot,
       }
     } catch (e) {
       patternGrab.value = null
@@ -906,9 +926,18 @@ const onCanvasMouseMove = (event) => {
     // Translation = pointer - canvasCenter - grabbedOffset.
     let displayX = ptrX - canvasRect.width / 2
     let displayY = ptrY - canvasRect.height / 2
+
     if (patternGrab.value) {
-      displayX = displayX - patternGrab.value.pointerDx
-      displayY = displayY - patternGrab.value.pointerDy
+      const rot = Number(draggedPlacedAsset.value.rotation || 0)
+      const scale = Number(draggedPlacedAsset.value.scale || 1) || 1
+      // Convert the stored local point back into screen-space (rotated+scaled)
+      const scaledLocal = {
+        x: patternGrab.value.localX * scale,
+        y: patternGrab.value.localY * scale,
+      }
+      const screen = rotatePoint(scaledLocal.x, scaledLocal.y, rot)
+      displayX = displayX - screen.x
+      displayY = displayY - screen.y
     }
 
     displayX = Math.round(displayX)
@@ -2813,7 +2842,7 @@ const randomizePattern = () => {
             </template>
           </div>
 
-          <div :style="gridStyle" class="grid-container">
+          <div v-if="editorMode !== 'pattern'" :style="gridStyle" class="grid-container">
             <div v-for="cell in gridCells" :key="cell" class="grid-cell"></div>
           </div>
 
