@@ -31,31 +31,21 @@ const canvasDimensions = [
   { name: 'Custom', width: 1000, height: 1000 },
 ]
 
-// Assets definition with snap type
+// Assets definition
 const assets = [
-  { name: 'Circle', path: '/Assets/Circle.svg', snapType: 'intersection' }, // snaps to grid intersections
+  { name: 'Circle', path: '/Assets/Circle.svg' },
   {
     name: 'Corner',
     path: '/Assets/Corner.svg',
-    snapType: 'corner',
-    offsetY: -0.001,
-    offsetX: -0.015,
-  }, // snaps to cell corners
-  { name: 'Quarter Circle', path: '/Assets/Quarter_circle.svg', snapType: 'corner' },
+  },
+  { name: 'Quarter Circle', path: '/Assets/Quarter_circle.svg' },
   {
     name: 'Half Circle',
     path: '/Assets/Half_circle.svg',
-    snapType: 'edge',
-    // visual horizontal nudging to ensure the semicircle's flat edge
-    // sits flush with the cell edge even if the SVG has internal padding.
-    // Negative shifts the graphic leftwards relative to its bounding box.
-  }, // snaps to cell edges; offsetX = fraction of asset width
+  },
   {
     name: 'Star',
     path: '/Assets/Star.svg',
-    snapType: 'intersection',
-    offsetX: -0.005,
-    offsetY: -0.009,
   },
 ]
 
@@ -249,69 +239,31 @@ const gridCells = computed(() => {
   return Array.from({ length: gridColumns.value * gridRows.value }, (_, i) => i)
 })
 
-// Helper: compute snapped anchor (in canvas pixels) for a given pointer position
-const computeSnapFromPointer = (pointerX, pointerY, snapType, canvasWidth, canvasHeight) => {
-  // Derive on-screen square cell size from the rendered canvas width so the
-  // snapping grid matches what the user sees. Avoid using preset-derived
-  // gridRows which may be based on different units.
+// Helper: snap to grid
+// - 1x assets: snap to CENTER of nearest cell
+// - 2x assets: snap to nearest GRID INTERSECTION
+//   (so the 2x tile occupies a clean 2×2 block)
+const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, multiplier = 1) => {
   const cellWidth = canvasWidth / gridColumns.value
-  // Use the rendered canvas height and the reactive gridRows so snapping
-  // honors the visual grid even when cells are not perfect squares.
   const cellHeight = canvasHeight / Math.max(1, gridRows.value)
 
-  let snappedX = pointerX
-  let snappedY = pointerY
+  // Clamp pointer inside the canvas to keep intersection math stable
+  const px = Math.max(0, Math.min(canvasWidth, pointerX))
+  const py = Math.max(0, Math.min(canvasHeight, pointerY))
 
-  if (snapType === 'intersection') {
-    snappedX = Math.round(pointerX / cellWidth) * cellWidth
-    snappedY = Math.round(pointerY / cellHeight) * cellHeight
-  } else if (snapType === 'edge') {
-    const leftEdge = Math.floor(pointerX / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(pointerX / cellWidth) * cellWidth
-    const topEdge = Math.floor(pointerY / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(pointerY / cellHeight) * cellHeight
-    const midpoints = [
-      { x: (leftEdge + rightEdge) / 2, y: topEdge },
-      { x: (leftEdge + rightEdge) / 2, y: bottomEdge },
-      { x: leftEdge, y: (topEdge + bottomEdge) / 2 },
-      { x: rightEdge, y: (topEdge + bottomEdge) / 2 },
-    ]
-    let minDistance = Infinity
-    let closestMid = midpoints[0]
-    midpoints.forEach((pt) => {
-      const distance = Math.hypot(pointerX - pt.x, pointerY - pt.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestMid = pt
-      }
-    })
-    snappedX = closestMid.x
-    snappedY = closestMid.y
-  } else {
-    const leftEdge = Math.floor(pointerX / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(pointerX / cellWidth) * cellWidth
-    const topEdge = Math.floor(pointerY / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(pointerY / cellHeight) * cellHeight
-    const corners = [
-      { x: leftEdge, y: topEdge },
-      { x: rightEdge, y: topEdge },
-      { x: leftEdge, y: bottomEdge },
-      { x: rightEdge, y: bottomEdge },
-    ]
-    let minDistance = Infinity
-    let closestCorner = corners[0]
-    corners.forEach((corner) => {
-      const distance = Math.hypot(pointerX - corner.x, pointerY - corner.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestCorner = corner
-      }
-    })
-    snappedX = closestCorner.x
-    snappedY = closestCorner.y
+  // 2x (or bigger) should anchor to intersections
+  if ((multiplier || 1) > 1) {
+    const col = Math.round(px / cellWidth)
+    const row = Math.round(py / cellHeight)
+    const clampedCol = Math.max(0, Math.min(gridColumns.value, col))
+    const clampedRow = Math.max(0, Math.min(gridRows.value, row))
+    return { x: clampedCol * cellWidth, y: clampedRow * cellHeight }
   }
 
-  return { x: snappedX, y: snappedY }
+  // 1x: center of nearest cell
+  const col = Math.max(0, Math.min(gridColumns.value - 1, Math.floor(px / cellWidth)))
+  const row = Math.max(0, Math.min(gridRows.value - 1, Math.floor(py / cellHeight)))
+  return { x: (col + 0.5) * cellWidth, y: (row + 0.5) * cellHeight }
 }
 
 // Drag and drop functions
@@ -371,197 +323,44 @@ const onDrop = (event) => {
   const cellWidth = canvasWidth / gridColumns.value
   const cellHeight = canvasHeight / gridRows.value
 
-  let snappedX, snappedY
-
-  if (dragged.snapType === 'intersection') {
-    // Snap to grid intersections (corners where cells meet)
-    snappedX = Math.round(x / cellWidth) * cellWidth
-    snappedY = Math.round(y / cellHeight) * cellHeight
-  } else if (dragged.snapType === 'edge') {
-    // Snap to nearest edge midpoint of the current cell
-    const leftEdge = Math.floor(x / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(x / cellWidth) * cellWidth
-    const topEdge = Math.floor(y / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(y / cellHeight) * cellHeight
-
-    const midpoints = [
-      { x: (leftEdge + rightEdge) / 2, y: topEdge }, // top middle
-      { x: (leftEdge + rightEdge) / 2, y: bottomEdge }, // bottom middle
-      { x: leftEdge, y: (topEdge + bottomEdge) / 2 }, // left middle
-      { x: rightEdge, y: (topEdge + bottomEdge) / 2 }, // right middle
-    ]
-
-    // Find the closest midpoint
-    let minDistance = Infinity
-    let closestMid = midpoints[0]
-
-    midpoints.forEach((pt) => {
-      const distance = Math.hypot(x - pt.x, y - pt.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestMid = pt
-      }
-    })
-
-    snappedX = closestMid.x
-    snappedY = closestMid.y
-  } else {
-    // Snap to cell corners (edge of individual cells)
-    // Find which cell corner is closest
-    const leftEdge = Math.floor(x / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(x / cellWidth) * cellWidth
-    const topEdge = Math.floor(y / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(y / cellHeight) * cellHeight
-
-    // Calculate distances to all four corners of the current cell
-    const corners = [
-      { x: leftEdge, y: topEdge },
-      { x: rightEdge, y: topEdge },
-      { x: leftEdge, y: bottomEdge },
-      { x: rightEdge, y: bottomEdge },
-    ]
-
-    // Find the closest corner
-    let minDistance = Infinity
-    let closestCorner = corners[0]
-
-    corners.forEach((corner) => {
-      const distance = Math.hypot(x - corner.x, y - corner.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestCorner = corner
-      }
-    })
-
-    snappedX = closestCorner.x
-    snappedY = closestCorner.y
-  }
-
-  // Adjust placement for snap types.
-  // Use current canvas cell width and the selected multiplier so the new
-  // placed asset will scale with the grid when the slider changes.
   // Decide size multiplier.
   // - SVG assets use the existing 1x/2x control (and Star is forced 2x)
   // - Uploaded images use their own 1–4 grid-square control
   let currentMultiplier = assetMultiplier.value || 1
   if (dragged && dragged.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
-  // enforce Star to always be 2x regardless of UI selection
-  const forcedCurrentMultiplier = dragged && dragged.name === 'Star' ? 2 : currentMultiplier
+  // Manual placement: allow Star to be 1x if the user picked 1x.
+  const forcedCurrentMultiplier = currentMultiplier
+
+  // Snap anchor: 1x -> cell center, 2x -> intersection
+  const snapAnchor = computeSnapFromPointer(
+    x,
+    y,
+    canvasWidth,
+    canvasHeight,
+    forcedCurrentMultiplier,
+  )
+  const snappedX = snapAnchor.x
+  const snappedY = snapAnchor.y
+
+  // Use current canvas cell width and the selected multiplier so the new
+  // placed asset will scale with the grid when the slider changes.
   const currentAssetSize = Math.round(cellWidth * forcedCurrentMultiplier)
   // Only apply horizontal asset-specific offset for 1x assets — larger
   // multipliers may amplify the offset too much (Half Circle padding fix).
   const dropOffsetX = (currentMultiplier === 1 ? dragged.offsetX || 0 : 0) * currentAssetSize
   const dropOffsetY = (dragged.offsetY || 0) * currentAssetSize
 
-  // Compute top-left so the asset is centered on the snap anchor. For 1x
-  // assets snap to the containing cell top-left so they occupy exactly one
-  // cell; larger assets are centered on the snap anchor.
+  // Compute top-left:
+  // - 1x: center on the cell center anchor
+  // - 2x: anchor is intersection, so top-left should be on that intersection
+  //   to occupy a clean 2×2 block.
   let finalX, finalY
-  if (forcedCurrentMultiplier === 1) {
-    // If this asset snaps to edges, center it on the snap anchor even
-    // at 1x so edge-aligned shapes (like Half Circle) sit correctly.
-    if (dragged.snapType === 'edge') {
-      finalX = snappedX - currentAssetSize / 2
-      finalY = snappedY - currentAssetSize / 2
-    } else {
-      // Determine the cell left/top and align according to corner if needed
-      const epsilon = 0.5
-      const cellLeft =
-        Math.max(0, Math.min(gridColumns.value - 1, Math.floor(snappedX / cellWidth))) * cellWidth
-      const cellTop =
-        Math.max(0, Math.min(gridRows.value - 1, Math.floor(snappedY / cellHeight))) * cellHeight
-      if (dragged.snapType === 'corner') {
-        // Decide which corner the snap anchor corresponds to
-        const nearLeft = Math.abs(snappedX - cellLeft) <= epsilon
-        const nearRight = Math.abs(snappedX - (cellLeft + cellWidth)) <= epsilon
-        const nearTop = Math.abs(snappedY - cellTop) <= epsilon
-        const nearBottom = Math.abs(snappedY - (cellTop + cellHeight)) <= epsilon
-        // Align the asset so its edges meet the corner
-        if (nearLeft) finalX = Math.round(cellLeft + dropOffsetX)
-        else if (nearRight)
-          finalX = Math.round(cellLeft + cellWidth - currentAssetSize + dropOffsetX)
-        else finalX = Math.round(cellLeft + dropOffsetX)
-
-        if (nearTop) finalY = Math.round(cellTop + dropOffsetY)
-        else if (nearBottom)
-          finalY = Math.round(cellTop + cellHeight - currentAssetSize + dropOffsetY)
-        else finalY = Math.round(cellTop + dropOffsetY)
-      } else {
-        const col = Math.max(0, Math.min(gridColumns.value - 1, Math.floor(snappedX / cellWidth)))
-        const row = Math.max(0, Math.min(gridRows.value - 1, Math.floor(snappedY / cellHeight)))
-        finalX = col * cellWidth
-        finalY = row * cellHeight
-      }
-    }
+  if (forcedCurrentMultiplier > 1) {
+    finalX = snappedX
+    finalY = snappedY
   } else {
-    // For multi-cell assets, align edge-snapping assets flush to the
-    // appropriate side of the mult-sized block instead of centering.
-    if (dragged.snapType === 'edge' && forcedCurrentMultiplier > 1) {
-      // determine a top-left tile for the mult block that includes the anchor
-      let col = Math.floor(snappedX / cellWidth)
-      let row = Math.floor(snappedY / cellHeight)
-      col = Math.max(0, Math.min(gridColumns.value - forcedCurrentMultiplier, col))
-      row = Math.max(0, Math.min(gridRows.value - forcedCurrentMultiplier, row))
-      const left = col * cellWidth
-      const top = row * cellHeight
-      const right = left + forcedCurrentMultiplier * cellWidth
-      const bottom = top + forcedCurrentMultiplier * cellHeight
-
-      const midTop = { x: (left + right) / 2, y: top }
-      const midBottom = { x: (left + right) / 2, y: bottom }
-      const midLeft = { x: left, y: (top + bottom) / 2 }
-      const midRight = { x: right, y: (top + bottom) / 2 }
-      const dists = [
-        { side: 'top', d: Math.hypot(snappedX - midTop.x, snappedY - midTop.y) },
-        { side: 'bottom', d: Math.hypot(snappedX - midBottom.x, snappedY - midBottom.y) },
-        { side: 'left', d: Math.hypot(snappedX - midLeft.x, snappedY - midLeft.y) },
-        { side: 'right', d: Math.hypot(snappedX - midRight.x, snappedY - midRight.y) },
-      ]
-      dists.sort((a, b) => a.d - b.d)
-      const side = dists[0].side
-      if (side === 'left') {
-        finalX = Math.round(left + dropOffsetX)
-        finalY = Math.round(
-          top + (forcedCurrentMultiplier * cellHeight - currentAssetSize) / 2 + dropOffsetY,
-        )
-      } else if (side === 'right') {
-        finalX = Math.round(right - currentAssetSize + dropOffsetX)
-        finalY = Math.round(
-          top + (forcedCurrentMultiplier * cellHeight - currentAssetSize) / 2 + dropOffsetY,
-        )
-      } else if (side === 'top') {
-        finalY = Math.round(top + dropOffsetY)
-        finalX = Math.round(
-          left + (forcedCurrentMultiplier * cellWidth - currentAssetSize) / 2 + dropOffsetX,
-        )
-      } else {
-        finalY = Math.round(bottom - currentAssetSize + dropOffsetY)
-        finalX = Math.round(
-          left + (forcedCurrentMultiplier * cellWidth - currentAssetSize) / 2 + dropOffsetX,
-        )
-      }
-    } else {
-      finalX = snappedX - currentAssetSize / 2
-      finalY = snappedY - currentAssetSize / 2
-    }
-  }
-
-  // Uploaded images should feel “grid-aligned” at any size multiplier.
-  // For multiplier > 1, we want the TOP-LEFT to snap to a grid intersection.
-  // Use the drop's snap anchor (snappedX/snappedY) rather than the centered
-  // finalX/finalY (which can drift), then clamp so the full image stays in
-  // bounds.
-  if (dragged?.isUploaded && forcedCurrentMultiplier > 1) {
-    const maxCol = Math.max(0, gridColumns.value - forcedCurrentMultiplier)
-    const maxRow = Math.max(0, gridRows.value - forcedCurrentMultiplier)
-
-    let col = Math.round(snappedX / cellWidth)
-    let row = Math.round(snappedY / cellHeight)
-    col = Math.max(0, Math.min(maxCol, col))
-    row = Math.max(0, Math.min(maxRow, row))
-
-    finalX = Math.round(col * cellWidth)
-    finalY = Math.round(row * cellHeight)
+    finalX = snappedX - currentAssetSize / 2
+    finalY = snappedY - currentAssetSize / 2
   }
 
   // Apply asset-specific offsets (fractions of asset size)
@@ -585,7 +384,7 @@ const onDrop = (event) => {
     y: finalY,
     rotation: 0,
     id: Date.now(),
-    multiplier: dragged && dragged.name === 'Star' ? 2 : currentMultiplier,
+    multiplier: currentMultiplier,
   }
   // Uploaded raster images always go to the background layer
   if (newItem.isUploaded) backgroundImages.value.push(newItem)
@@ -607,8 +406,7 @@ const onOverlayDrop = (event) => {
 }
 
 // Spawn an asset at the visual center of the canvas. This respects the
-// asset's snapType by computing a snap anchor at the canvas center and then
-// centering the asset on that anchor (plus any per-asset fractional offsets).
+// current snapping rules (1x = cell center, 2x = intersections).
 const spawnAssetCentered = (asset) => {
   if (!canvasRef.value) return
   try {
@@ -620,70 +418,33 @@ const spawnAssetCentered = (asset) => {
     const centerX = canvasWidth / 2
     const centerY = canvasHeight / 2
 
-    // Compute snap anchor using the helper so corner/edge/intersection
-    // behavior matches dropping via pointer.
-    const snapAnchor = computeSnapFromPointer(
-      centerX,
-      centerY,
-      asset.snapType,
-      canvasWidth,
-      canvasHeight,
-    )
-
     // Decide size multiplier.
-    // - SVG assets use the existing 1x/2x control (and Star is forced 2x)
+    // - SVG assets use the existing 1x/2x control
     // - Uploaded images use their own 1–4 grid-square control
     let currentMultiplier = assetMultiplier.value || 1
     if (asset && asset.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
-    // enforce Star to always be 2x
-    if (asset && asset.name === 'Star') currentMultiplier = 2
+
+    // Snap anchor: 1x -> cell center, 2x -> intersection
+    const snapAnchor = computeSnapFromPointer(
+      centerX,
+      centerY,
+      canvasWidth,
+      canvasHeight,
+      currentMultiplier,
+    )
     const cellWidth = canvasWidth / gridColumns.value
     const cellHeight = canvasHeight / Math.max(1, gridRows.value)
     const currentAssetSize = Math.round(cellWidth * currentMultiplier)
     const dropOffsetX = (currentMultiplier === 1 ? asset.offsetX || 0 : 0) * currentAssetSize
     const dropOffsetY = (asset.offsetY || 0) * currentAssetSize
 
-    // Align placement depending on multiplier: 1x assets snap to a cell
-    // top-left so they occupy exactly one cell; larger assets are centered
-    // on the snap anchor.
+    // Placement:
+    // - 1x: center on the cell center anchor
+    // - 2x: anchor is intersection -> top-left on that intersection
     let finalX, finalY
-    if (currentMultiplier === 1) {
-      // If asset snaps to edge, center it on the snap anchor so small
-      // edge-aligned assets sit correctly along the cell edge.
-      if (asset.snapType === 'edge') {
-        finalX = Math.round(snapAnchor.x - currentAssetSize / 2 + dropOffsetX)
-        finalY = Math.round(snapAnchor.y - currentAssetSize / 2 + dropOffsetY)
-      } else if (asset.snapType === 'corner') {
-        const epsilon = 0.5
-        const cellLeft =
-          Math.max(0, Math.min(gridColumns.value - 1, Math.floor(snapAnchor.x / cellWidth))) *
-          cellWidth
-        const cellTop =
-          Math.max(0, Math.min(gridRows.value - 1, Math.floor(snapAnchor.y / cellHeight))) *
-          cellHeight
-        const nearLeft = Math.abs(snapAnchor.x - cellLeft) <= epsilon
-        const nearRight = Math.abs(snapAnchor.x - (cellLeft + cellWidth)) <= epsilon
-        const nearTop = Math.abs(snapAnchor.y - cellTop) <= epsilon
-        const nearBottom = Math.abs(snapAnchor.y - (cellTop + cellHeight)) <= epsilon
-
-        if (nearLeft) finalX = Math.round(cellLeft + dropOffsetX)
-        else if (nearRight)
-          finalX = Math.round(cellLeft + cellWidth - currentAssetSize + dropOffsetX)
-        else finalX = Math.round(cellLeft + dropOffsetX)
-
-        if (nearTop) finalY = Math.round(cellTop + dropOffsetY)
-        else if (nearBottom)
-          finalY = Math.round(cellTop + cellHeight - currentAssetSize + dropOffsetY)
-        else finalY = Math.round(cellTop + dropOffsetY)
-      } else {
-        const col = Math.max(
-          0,
-          Math.min(gridColumns.value - 1, Math.floor(snapAnchor.x / cellWidth)),
-        )
-        const row = Math.max(0, Math.min(gridRows.value - 1, Math.floor(snapAnchor.y / cellHeight)))
-        finalX = Math.round(col * cellWidth + dropOffsetX)
-        finalY = Math.round(row * cellHeight + dropOffsetY)
-      }
+    if (currentMultiplier > 1) {
+      finalX = Math.round(snapAnchor.x + dropOffsetX)
+      finalY = Math.round(snapAnchor.y + dropOffsetY)
     } else {
       finalX = Math.round(snapAnchor.x - currentAssetSize / 2 + dropOffsetX)
       finalY = Math.round(snapAnchor.y - currentAssetSize / 2 + dropOffsetY)
@@ -700,7 +461,7 @@ const spawnAssetCentered = (asset) => {
       y: finalY,
       rotation: 0,
       id: Date.now(),
-      multiplier: asset && asset.name === 'Star' ? 2 : currentMultiplier,
+      multiplier: currentMultiplier,
     }
     // Uploaded raster images always go under assets
     if (newItem.isUploaded) backgroundImages.value.push(newItem)
@@ -923,63 +684,17 @@ const onCanvasMouseMove = (event) => {
   const cellWidth = canvasWidth / gridColumns.value
   const cellHeight = canvasHeight / Math.max(1, gridRows.value)
 
-  // Compute the snapped anchor for the pointer position but do NOT apply it
-  // to the live display. We save it in lastSnap so snapping can be applied on
-  // mouseup (this preserves pointer alignment during drag and prevents
-  // visual jumps for assets with odd viewBoxes like the Star).
-  let snappedX, snappedY
-  if (draggedPlacedAsset.value.snapType === 'intersection') {
-    snappedX = Math.round((rawX + dragOffset.value.x) / cellWidth) * cellWidth
-    snappedY = Math.round((rawY + dragOffset.value.y) / cellHeight) * cellHeight
-  } else if (draggedPlacedAsset.value.snapType === 'edge') {
-    const px = rawX + dragOffset.value.x
-    const py = rawY + dragOffset.value.y
-    const leftEdge = Math.floor(px / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(px / cellWidth) * cellWidth
-    const topEdge = Math.floor(py / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(py / cellHeight) * cellHeight
-    const midpoints = [
-      { x: (leftEdge + rightEdge) / 2, y: topEdge },
-      { x: (leftEdge + rightEdge) / 2, y: bottomEdge },
-      { x: leftEdge, y: (topEdge + bottomEdge) / 2 },
-      { x: rightEdge, y: (topEdge + bottomEdge) / 2 },
-    ]
-    let minDistance = Infinity
-    let closestMid = midpoints[0]
-    midpoints.forEach((pt) => {
-      const distance = Math.hypot(px - pt.x, py - pt.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestMid = pt
-      }
-    })
-    snappedX = closestMid.x
-    snappedY = closestMid.y
-  } else {
-    const px = rawX + dragOffset.value.x
-    const py = rawY + dragOffset.value.y
-    const leftEdge = Math.floor(px / cellWidth) * cellWidth
-    const rightEdge = Math.ceil(px / cellWidth) * cellWidth
-    const topEdge = Math.floor(py / cellHeight) * cellHeight
-    const bottomEdge = Math.ceil(py / cellHeight) * cellHeight
-    const corners = [
-      { x: leftEdge, y: topEdge },
-      { x: rightEdge, y: topEdge },
-      { x: leftEdge, y: bottomEdge },
-      { x: rightEdge, y: bottomEdge },
-    ]
-    let minDistance = Infinity
-    let closestCorner = corners[0]
-    corners.forEach((corner) => {
-      const distance = Math.hypot(px - corner.x, py - corner.y)
-      if (distance < minDistance) {
-        minDistance = distance
-        closestCorner = corner
-      }
-    })
-    snappedX = closestCorner.x
-    snappedY = closestCorner.y
-  }
+  // Compute a snapped anchor.
+  // - 1x assets: cell center
+  // - 2x assets: grid intersection
+  // We don't apply it live (to avoid jumpy dragging); we store it in lastSnap
+  // and apply it on mouseup.
+  const px = rawX + dragOffset.value.x
+  const py = rawY + dragOffset.value.y
+  const dragMult = draggedPlacedAsset.value?.multiplier || 1
+  const snapAnchor = computeSnapFromPointer(px, py, canvasWidth, canvasHeight, dragMult)
+  const snappedX = snapAnchor.x
+  const snappedY = snapAnchor.y
 
   // Store snapped anchor for drop-time application
   // Clamp snapped anchor to canvas bounds so out-of-canvas pointers don't
@@ -993,8 +708,7 @@ const onCanvasMouseMove = (event) => {
   // scales with the grid when grid/canvas size changes)
   const currentDraggingAssetSize = getAssetPixelSize(draggedPlacedAsset.value)
 
-  // Extended debug info (temporary) to help diagnose snapping issues
-  // debug information removed
+  // (debug info removed)
 
   // Live display follows the raw pointer-based position so the cursor stays
   // locked to the same visual point on the asset while dragging.
@@ -1060,7 +774,7 @@ const onCanvasMouseMove = (event) => {
 }
 
 const onCanvasMouseUp = (event) => {
-  // When finishing a drag, apply offsets (if any) and the 'corner' correction to the final position
+  // When finishing a drag, apply offsets (if any) and snapping to the final position
   if (draggedPlacedAsset.value) {
     // Only delete if the POINTER is over the trash button at mouseup.
     // This avoids deleting when the asset's visual bbox overlaps the trash but
@@ -1127,54 +841,33 @@ const onCanvasMouseUp = (event) => {
       }
 
       let snapAnchor = lastSnap.value
-      if (asset.snapType === 'corner' && pointerX !== null && pointerY !== null) {
+      const currentMultiplier = asset.multiplier || assetMultiplier.value || 1
+      if (pointerX !== null && pointerY !== null) {
+        // For 2x+ intersection snapping we must snap based on the tile's
+        // top-left position, not the pointer position (which is typically
+        // somewhere inside the tile). Using the pointer can make it feel like
+        // snapping is disabled or inconsistent.
+        const snapInputX = currentMultiplier > 1 ? displayX : pointerX
+        const snapInputY = currentMultiplier > 1 ? displayY : pointerY
+
         snapAnchor = computeSnapFromPointer(
-          pointerX,
-          pointerY,
-          asset.snapType,
+          snapInputX,
+          snapInputY,
           canvasRectNow.width,
           canvasRectNow.height,
+          currentMultiplier,
         )
       }
 
       // Treat snapAnchor differently for assets sized 1x: align to the
       // containing cell top-left so the 1x asset occupies a single cell.
-      const currentMultiplier = asset.multiplier || assetMultiplier.value || 1
       const cellWidthNow = canvasRectNow.width / gridColumns.value
       const cellHeightNow = canvasRectNow.height / Math.max(1, gridRows.value)
       let snappedTopLeftX, snappedTopLeftY
       if (currentMultiplier === 1) {
-        const epsilon = 0.5
-        const cellLeft =
-          Math.max(0, Math.min(gridColumns.value - 1, Math.floor(snapAnchor.x / cellWidthNow))) *
-          cellWidthNow
-        const cellTop =
-          Math.max(0, Math.min(gridRows.value - 1, Math.floor(snapAnchor.y / cellHeightNow))) *
-          cellHeightNow
-        if (asset.snapType === 'corner') {
-          const nearLeft = Math.abs(snapAnchor.x - cellLeft) <= epsilon
-          const nearRight = Math.abs(snapAnchor.x - (cellLeft + cellWidthNow)) <= epsilon
-          const nearTop = Math.abs(snapAnchor.y - cellTop) <= epsilon
-          const nearBottom = Math.abs(snapAnchor.y - (cellTop + cellHeightNow)) <= epsilon
-          if (nearLeft) snappedTopLeftX = cellLeft
-          else if (nearRight) snappedTopLeftX = cellLeft + cellWidthNow - currentAssetSize
-          else snappedTopLeftX = cellLeft
-
-          if (nearTop) snappedTopLeftY = cellTop
-          else if (nearBottom) snappedTopLeftY = cellTop + cellHeightNow - currentAssetSize
-          else snappedTopLeftY = cellTop
-        } else {
-          const col = Math.max(
-            0,
-            Math.min(gridColumns.value - 1, Math.floor(snapAnchor.x / cellWidthNow)),
-          )
-          const row = Math.max(
-            0,
-            Math.min(gridRows.value - 1, Math.floor(snapAnchor.y / cellHeightNow)),
-          )
-          snappedTopLeftX = col * cellWidthNow
-          snappedTopLeftY = row * cellHeightNow
-        }
+        // Center the 1x asset in its target cell.
+        snappedTopLeftX = snapAnchor.x - currentAssetSize / 2
+        snappedTopLeftY = snapAnchor.y - currentAssetSize / 2
       } else {
         // Uploaded images: for any multiplier > 1, snap TOP-LEFT to a grid
         // intersection so the image occupies whole squares (e.g. 3x3).
@@ -1187,51 +880,10 @@ const onCanvasMouseUp = (event) => {
           row = Math.max(0, Math.min(maxRow, row))
           snappedTopLeftX = col * cellWidthNow
           snappedTopLeftY = row * cellHeightNow
-        } else if (asset.snapType === 'edge' && currentMultiplier > 1) {
-          // For multi-cell assets, align edge-snapping assets flush to the
-          // appropriate side of the mult-sized block instead of centering.
-          // determine a top-left tile to place the mult block
-          let col = Math.floor(snapAnchor.x / cellWidthNow)
-          let row = Math.floor(snapAnchor.y / cellHeightNow)
-          col = Math.max(0, Math.min(gridColumns.value - currentMultiplier, col))
-          row = Math.max(0, Math.min(gridRows.value - currentMultiplier, row))
-          const left = col * cellWidthNow
-          const top = row * cellHeightNow
-          const right = left + currentMultiplier * cellWidthNow
-          const bottom = top + currentMultiplier * cellHeightNow
-
-          const midTop = { x: (left + right) / 2, y: top }
-          const midBottom = { x: (left + right) / 2, y: bottom }
-          const midLeft = { x: left, y: (top + bottom) / 2 }
-          const midRight = { x: right, y: (top + bottom) / 2 }
-          const dists = [
-            { side: 'top', d: Math.hypot(snapAnchor.x - midTop.x, snapAnchor.y - midTop.y) },
-            {
-              side: 'bottom',
-              d: Math.hypot(snapAnchor.x - midBottom.x, snapAnchor.y - midBottom.y),
-            },
-            { side: 'left', d: Math.hypot(snapAnchor.x - midLeft.x, snapAnchor.y - midLeft.y) },
-            { side: 'right', d: Math.hypot(snapAnchor.x - midRight.x, snapAnchor.y - midRight.y) },
-          ]
-          dists.sort((a, b) => a.d - b.d)
-          const side = dists[0].side
-          if (side === 'left') {
-            snappedTopLeftX = left
-            snappedTopLeftY = top + (currentMultiplier * cellHeightNow - currentAssetSize) / 2
-          } else if (side === 'right') {
-            snappedTopLeftX = right - currentAssetSize
-            snappedTopLeftY = top + (currentMultiplier * cellHeightNow - currentAssetSize) / 2
-          } else if (side === 'top') {
-            snappedTopLeftY = top
-            snappedTopLeftX = left + (currentMultiplier * cellWidthNow - currentAssetSize) / 2
-          } else {
-            snappedTopLeftY = bottom - currentAssetSize
-            snappedTopLeftX = left + (currentMultiplier * cellWidthNow - currentAssetSize) / 2
-          }
         } else {
-          // center the asset on the anchor for larger sizes
-          snappedTopLeftX = snapAnchor.x - currentAssetSize / 2
-          snappedTopLeftY = snapAnchor.y - currentAssetSize / 2
+          // 2x SVG assets: anchor is an intersection, so place top-left on it
+          snappedTopLeftX = snapAnchor.x
+          snappedTopLeftY = snapAnchor.y
         }
       }
       const candidateX = snappedTopLeftX + dropOffsetX
@@ -1239,14 +891,18 @@ const onCanvasMouseUp = (event) => {
 
       // Decide to snap based on how close the POINTER was to the snap anchor
       // (not on how far the element would move). Use the recomputed snapAnchor
-      // when available so corner snaps are based on the pointer location.
+      // when available so snap is based on the pointer location.
       let shouldSnap = false
       let pointerDist = null
       let moveDist = null
       let snapTolerance = null
       if (pointerX !== null && pointerY !== null) {
-        const dxp = pointerX - snapAnchor.x
-        const dyp = pointerY - snapAnchor.y
+        // For 2x+ we compare the tile's top-left to the snap intersection.
+        // For 1x we keep using the pointer distance to the cell-center anchor.
+        const distX = currentMultiplier > 1 ? displayX : pointerX
+        const distY = currentMultiplier > 1 ? displayY : pointerY
+        const dxp = distX - snapAnchor.x
+        const dyp = distY - snapAnchor.y
         pointerDist = Math.hypot(dxp, dyp)
         // tolerance: snap when pointer is reasonably close to the snap anchor
         const cellWidthNow = canvasRectNow.width / gridColumns.value
@@ -1661,54 +1317,9 @@ const getExportSVGStringAsync = async () => {
     const cx = rx + rw / 2
     const cy = ry + rh / 2
 
-    // Determine preserveAspectRatio to match on-screen mask positioning
-    // For edge-snapped 1x assets the on-screen rendering uses maskPosition
-    // 'left center' (or equivalent). To replicate that we compute which
-    // side of the cell the asset was aligned to and pick an appropriate
-    // preserveAspectRatio value so the inlined SVG content aligns the same.
-    let preserveAspect = 'xMidYMid meet'
-    try {
-      const cellWRendered = renderedW / Math.max(1, gridColumns.value)
-      const cellHRendered = renderedH / Math.max(1, gridRows.value)
-      const mult = a.multiplier || 1
-      if (a.snapType === 'edge') {
-        // For both 1x and multi-cell assets compute the top-left of the
-        // block they occupy and compare the asset box to that block. This
-        // lets us decide which side the asset is flush to so preserveAspect
-        // mirrors the on-screen mask positioning.
-        const col = Math.max(
-          0,
-          Math.min(gridColumns.value - mult, Math.floor((a.x || 0) / cellWRendered)),
-        )
-        const row = Math.max(
-          0,
-          Math.min(gridRows.value - mult, Math.floor((a.y || 0) / cellHRendered)),
-        )
-        const blockLeft = col * cellWRendered
-        const blockTop = row * cellHRendered
-        const blockW = mult * cellWRendered
-        const blockH = mult * cellHRendered
-        const localX = (a.x || 0) - blockLeft
-        const localY = (a.y || 0) - blockTop
-        const eps = 1.5
-        const nearLeft = localX <= eps
-        const nearRight = localX >= blockW - assetSizeRendered - eps
-        const nearTop = localY <= eps
-        const nearBottom = localY >= blockH - assetSizeRendered - eps
-
-        if (nearLeft && nearTop) preserveAspect = 'xMinYMin meet'
-        else if (nearLeft && nearBottom) preserveAspect = 'xMinYMax meet'
-        else if (nearRight && nearTop) preserveAspect = 'xMaxYMin meet'
-        else if (nearRight && nearBottom) preserveAspect = 'xMaxYMax meet'
-        else if (nearLeft) preserveAspect = 'xMinYMid meet'
-        else if (nearRight) preserveAspect = 'xMaxYMid meet'
-        else if (nearTop) preserveAspect = 'xMidYMin meet'
-        else if (nearBottom) preserveAspect = 'xMidYMax meet'
-        else preserveAspect = 'xMidYMid meet'
-      }
-    } catch (e) {
-      preserveAspect = 'xMidYMid meet'
-    }
+    // Keep export positioning consistent with on-screen rendering.
+    // We no longer use per-asset snapType-based mask positioning.
+    const preserveAspect = 'xMidYMid meet'
 
     let fetched = null
     try {
@@ -1861,7 +1472,7 @@ const exportAsPDF = async () => {
 }
 
 // --- Uploaded images (user-provided raster assets) ---------------------
-const uploadedImages = ref([]) // [{ name, dataUrl, snapType, isUploaded }]
+const uploadedImages = ref([]) // [{ name, dataUrl, isUploaded }]
 const uploadInputRef = ref(null)
 
 const onUploadImage = (e) => {
@@ -1874,7 +1485,6 @@ const onUploadImage = (e) => {
         name: file.name,
         path: ev.target.result,
         dataUrl: ev.target.result,
-        snapType: 'intersection',
         isUploaded: true,
       })
     }
@@ -1919,8 +1529,8 @@ const handlePresetChange = (event) => {
 // (Generator type UI removed)
 
 // Randomize pattern according to current rules:
-// - Places assets according to their snapType (intersection/edge/corner)
-// - New assets respect the current assetMultiplier (this matches spawn/drop behavior)
+// - 1x tiles snap to cell centers
+// - 2x tiles snap to grid intersections
 // - Rotation is randomized among 0/90/180/270
 // - The previous canvas state is pushed to history so undo works
 const randomizePattern = () => {
@@ -1934,8 +1544,7 @@ const randomizePattern = () => {
     // Use the reactive gridRows to match the visual grid rather than
     // re-deriving rows from cell width; compute cell dimensions from
     // both canvas width/columns and canvas height/rows so placements
-    // align to edges/corners/intersections even when cells are not
-    // perfect squares.
+    // match the rendered grid even when cells are not perfect squares.
     const rows = gridRows.value
     const cellW = canvasWidth / cols
     const cellH = canvasHeight / Math.max(1, rows)
@@ -2074,10 +1683,8 @@ const randomizePattern = () => {
           }
 
           lastChosen = a
-          // Force Star to always be 2x in checkerboard generator as well.
-          // If it doesn't fit at the current cell, try shifting the 2x
-          // block left and/or up (one cell) to find a spot that fits and
-          // whose 4 cells are free. If none found, leave it 1x.
+          // Generator rule: Star may NEVER be 1x when auto-generating.
+          // If it can't fit as a 2x tile, we skip placing a Star here.
           if (a && a.name === 'Star') {
             let found = false
             const tryOffsets = [
@@ -2104,7 +1711,7 @@ const randomizePattern = () => {
                 }
               }
             }
-            if (!found) mult = 1
+            if (!found) continue
           }
           const left = placeCol * cellW
           const top = placeRow * cellH
@@ -2135,123 +1742,22 @@ const randomizePattern = () => {
             }
           }
 
-          // compute a snap anchor from the cell center so edge/corner
-          // snapTypes behave the same as manual placement
-          const cellCenterX = left + cellW / 2
-          const cellCenterY = top + cellH / 2
+          // Multiplier-based snapping (matches manual placement)
           const snapAnchor = computeSnapFromPointer(
-            cellCenterX,
-            cellCenterY,
-            a.snapType,
+            left + cellW / 2,
+            top + cellH / 2,
             canvasWidth,
             canvasHeight,
+            mult,
           )
 
           let finalX, finalY
-          if (mult === 1) {
-            // For edge-snapping assets (eg. Half Circle) prefer to keep the
-            // asset fully inside the originating cell. Determine which side
-            // of the cell the snap anchor corresponds to and align the asset
-            // flush to that side while centering along the perpendicular axis.
-            if (a.snapType === 'edge') {
-              const midTop = { x: left + cellW / 2, y: top }
-              const midBottom = { x: left + cellW / 2, y: top + cellH }
-              const midLeft = { x: left, y: top + cellH / 2 }
-              const midRight = { x: left + cellW, y: top + cellH / 2 }
-              const dists = [
-                { side: 'top', d: Math.hypot(snapAnchor.x - midTop.x, snapAnchor.y - midTop.y) },
-                {
-                  side: 'bottom',
-                  d: Math.hypot(snapAnchor.x - midBottom.x, snapAnchor.y - midBottom.y),
-                },
-                { side: 'left', d: Math.hypot(snapAnchor.x - midLeft.x, snapAnchor.y - midLeft.y) },
-                {
-                  side: 'right',
-                  d: Math.hypot(snapAnchor.x - midRight.x, snapAnchor.y - midRight.y),
-                },
-              ]
-              dists.sort((a, b) => a.d - b.d)
-              const side = dists[0].side
-              if (side === 'left') {
-                finalX = Math.round(left + dropOffsetX)
-                finalY = Math.round(top + (cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'right') {
-                finalX = Math.round(left + cellW - assetSizePx + dropOffsetX)
-                finalY = Math.round(top + (cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'top') {
-                finalY = Math.round(top + dropOffsetY)
-                finalX = Math.round(left + (cellW - assetSizePx) / 2 + dropOffsetX)
-              } else {
-                // bottom
-                finalY = Math.round(top + cellH - assetSizePx + dropOffsetY)
-                finalX = Math.round(left + (cellW - assetSizePx) / 2 + dropOffsetX)
-              }
-            } else {
-              // 1x assets align to the cell top-left (plus internal offsets)
-              // but if the asset snaps to a corner, align it flush to that corner
-              if (a.snapType === 'corner') {
-                const epsilon = 0.5
-                const nearLeft = Math.abs(snapAnchor.x - left) <= epsilon
-                const nearRight = Math.abs(snapAnchor.x - (left + cellW)) <= epsilon
-                const nearTop = Math.abs(snapAnchor.y - top) <= epsilon
-                const nearBottom = Math.abs(snapAnchor.y - (top + cellH)) <= epsilon
-                if (nearLeft) finalX = Math.round(left + dropOffsetX)
-                else if (nearRight) finalX = Math.round(left + cellW - assetSizePx + dropOffsetX)
-                else finalX = Math.round(left + dropOffsetX)
-
-                if (nearTop) finalY = Math.round(top + dropOffsetY)
-                else if (nearBottom) finalY = Math.round(top + cellH - assetSizePx + dropOffsetY)
-                else finalY = Math.round(top + dropOffsetY)
-              } else {
-                finalX = Math.round(left + dropOffsetX)
-                finalY = Math.round(top + dropOffsetY)
-              }
-            }
+          if (mult > 1) {
+            finalX = Math.round(snapAnchor.x + dropOffsetX)
+            finalY = Math.round(snapAnchor.y + dropOffsetY)
           } else {
-            // For multi-cell assets, align edge-snapping assets flush to the
-            // side of the multi-cell block instead of centering them.
-            if (a.snapType === 'edge' && mult > 1) {
-              const pcol = Math.max(0, Math.min(cols - mult, placeCol))
-              const prow = Math.max(0, Math.min(rows - mult, placeRow))
-              const left2 = pcol * cellW
-              const top2 = prow * cellH
-              const right2 = left2 + mult * cellW
-              const bottom2 = top2 + mult * cellH
-              const midTop = { x: (left2 + right2) / 2, y: top2 }
-              const midBottom = { x: (left2 + right2) / 2, y: bottom2 }
-              const midLeft = { x: left2, y: (top2 + bottom2) / 2 }
-              const midRight = { x: right2, y: (top2 + bottom2) / 2 }
-              const dists = [
-                { side: 'top', d: Math.hypot(snapAnchor.x - midTop.x, snapAnchor.y - midTop.y) },
-                {
-                  side: 'bottom',
-                  d: Math.hypot(snapAnchor.x - midBottom.x, snapAnchor.y - midBottom.y),
-                },
-                { side: 'left', d: Math.hypot(snapAnchor.x - midLeft.x, snapAnchor.y - midLeft.y) },
-                {
-                  side: 'right',
-                  d: Math.hypot(snapAnchor.x - midRight.x, snapAnchor.y - midRight.y),
-                },
-              ]
-              dists.sort((a, b) => a.d - b.d)
-              const side = dists[0].side
-              if (side === 'left') {
-                finalX = Math.round(left2 + dropOffsetX)
-                finalY = Math.round(top2 + (mult * cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'right') {
-                finalX = Math.round(right2 - assetSizePx + dropOffsetX)
-                finalY = Math.round(top2 + (mult * cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'top') {
-                finalY = Math.round(top2 + dropOffsetY)
-                finalX = Math.round(left2 + (mult * cellW - assetSizePx) / 2 + dropOffsetX)
-              } else {
-                finalY = Math.round(bottom2 - assetSizePx + dropOffsetY)
-                finalX = Math.round(left2 + (mult * cellW - assetSizePx) / 2 + dropOffsetX)
-              }
-            } else {
-              finalX = Math.round(snapAnchor.x - assetSizePx / 2 + dropOffsetX)
-              finalY = Math.round(snapAnchor.y - assetSizePx / 2 + dropOffsetY)
-            }
+            finalX = Math.round(snapAnchor.x - assetSizePx / 2 + dropOffsetX)
+            finalY = Math.round(snapAnchor.y - assetSizePx / 2 + dropOffsetY)
           }
 
           // Allow assets to be partially outside the canvas (clipped at edge),
@@ -2331,72 +1837,17 @@ const randomizePattern = () => {
           const a = assets[Math.floor(Math.random() * assets.length)]
           if (!a) continue
 
-          // compute anchor depending on snapType
-          // left/top may be adjusted later if we picked a 2x candidate
+          // Base cell origin; may be adjusted later if we pick a 2x candidate.
           let left = col * cellW
           let top = row * cellH
-          // derive a sensible anchor from the cell center using the shared
-          // snapping helper so behavior matches manual drops
-          const cellCenterX = left + cellW / 2
-          const cellCenterY = top + cellH / 2
-          let anchor = computeSnapFromPointer(
-            cellCenterX,
-            cellCenterY,
-            a.snapType,
-            canvasWidth,
-            canvasHeight,
-          )
-          let anchorX = anchor.x
-          let anchorY = anchor.y
 
-          if (a.snapType === 'intersection') {
-            anchorX = left
-            anchorY = top
-          } else if (a.snapType === 'edge') {
-            const side = Math.floor(Math.random() * 4)
-            switch (side) {
-              case 0: // top middle
-                anchorX = left + cellW / 2
-                anchorY = top
-                break
-              case 1: // bottom middle
-                anchorX = left + cellW / 2
-                anchorY = top + cellH
-                break
-              case 2: // left middle
-                anchorX = left
-                anchorY = top + cellH / 2
-                break
-              default: // right middle
-                anchorX = left + cellW
-                anchorY = top + cellH / 2
-                break
-            }
-          } else {
-            // corner
-            const corner = Math.floor(Math.random() * 4)
-            switch (corner) {
-              case 0:
-                anchorX = left
-                anchorY = top
-                break
-              case 1:
-                anchorX = left + cellW
-                anchorY = top
-                break
-              case 2:
-                anchorX = left
-                anchorY = top + cellH
-                break
-              default:
-                anchorX = left + cellW
-                anchorY = top + cellH
-                break
-            }
-          }
+          // Compute a snap anchor based on multiplier (1x center, 2x intersection)
+          // after mult is chosen and after any Star candidate adjustments.
+          let anchorX = left + cellW / 2
+          let anchorY = top + cellH / 2
 
-          // choose multiplier per asset (randomly 1x or 2x). We'll force Star to
-          // be 2x when possible by checking nearby cells for a valid 2x slot.
+          // choose multiplier per asset (randomly 1x or 2x).
+          // Generator rule: Star may NEVER be 1x when auto-generating.
           let mult = Math.random() < 0.5 ? 1 : 2
           if (a && a.name === 'Star') {
             // try to fit a 2x block at (col,row) or by shifting left/up one
@@ -2448,7 +1899,7 @@ const randomizePattern = () => {
                 }
               }
             }
-            if (!found) mult = 1
+            if (!found) continue
           }
 
           // compute size and offsets using per-asset multiplier
@@ -2476,79 +1927,22 @@ const randomizePattern = () => {
             }
           }
 
+          // Multiplier-based snapping (matches manual placement)
+          const snapAnchor = computeSnapFromPointer(
+            left + cellW / 2,
+            top + cellH / 2,
+            canvasWidth,
+            canvasHeight,
+            mult,
+          )
+
           let finalX, finalY
-          if (mult === 1) {
-            // For edge-snap assets, place them fully inside the cell and flush
-            // to the corresponding side; otherwise align top-left as before.
-            if (a.snapType === 'edge') {
-              const midTop = { x: left + cellW / 2, y: top }
-              const midBottom = { x: left + cellW / 2, y: top + cellH }
-              const midLeft = { x: left, y: top + cellH / 2 }
-              const midRight = { x: left + cellW, y: top + cellH / 2 }
-              const dists = [
-                { side: 'top', d: Math.hypot(anchorX - midTop.x, anchorY - midTop.y) },
-                { side: 'bottom', d: Math.hypot(anchorX - midBottom.x, anchorY - midBottom.y) },
-                { side: 'left', d: Math.hypot(anchorX - midLeft.x, anchorY - midLeft.y) },
-                { side: 'right', d: Math.hypot(anchorX - midRight.x, anchorY - midRight.y) },
-              ]
-              dists.sort((a, b) => a.d - b.d)
-              const side = dists[0].side
-              if (side === 'left') {
-                finalX = Math.round(left + dropOffsetX)
-                finalY = Math.round(top + (cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'right') {
-                finalX = Math.round(left + cellW - assetSizePx + dropOffsetX)
-                finalY = Math.round(top + (cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'top') {
-                finalY = Math.round(top + dropOffsetY)
-                finalX = Math.round(left + (cellW - assetSizePx) / 2 + dropOffsetX)
-              } else {
-                finalY = Math.round(top + cellH - assetSizePx + dropOffsetY)
-                finalX = Math.round(left + (cellW - assetSizePx) / 2 + dropOffsetX)
-              }
-            } else {
-              finalX = Math.round(left + dropOffsetX)
-              finalY = Math.round(top + dropOffsetY)
-            }
+          if (mult > 1) {
+            finalX = Math.round(snapAnchor.x + dropOffsetX)
+            finalY = Math.round(snapAnchor.y + dropOffsetY)
           } else {
-            if (a.snapType === 'edge' && mult > 1) {
-              let pcol = col
-              let prow = row
-              pcol = Math.max(0, Math.min(cols - mult, pcol))
-              prow = Math.max(0, Math.min(rows - mult, prow))
-              const left2 = pcol * cellW
-              const top2 = prow * cellH
-              const right2 = left2 + mult * cellW
-              const bottom2 = top2 + mult * cellH
-              const midTop = { x: (left2 + right2) / 2, y: top2 }
-              const midBottom = { x: (left2 + right2) / 2, y: bottom2 }
-              const midLeft = { x: left2, y: (top2 + bottom2) / 2 }
-              const midRight = { x: right2, y: (top2 + bottom2) / 2 }
-              const dists = [
-                { side: 'top', d: Math.hypot(anchorX - midTop.x, anchorY - midTop.y) },
-                { side: 'bottom', d: Math.hypot(anchorX - midBottom.x, anchorY - midBottom.y) },
-                { side: 'left', d: Math.hypot(anchorX - midLeft.x, anchorY - midLeft.y) },
-                { side: 'right', d: Math.hypot(anchorX - midRight.x, anchorY - midRight.y) },
-              ]
-              dists.sort((a, b) => a.d - b.d)
-              const side = dists[0].side
-              if (side === 'left') {
-                finalX = Math.round(left2 + dropOffsetX)
-                finalY = Math.round(top2 + (mult * cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'right') {
-                finalX = Math.round(right2 - assetSizePx + dropOffsetX)
-                finalY = Math.round(top2 + (mult * cellH - assetSizePx) / 2 + dropOffsetY)
-              } else if (side === 'top') {
-                finalY = Math.round(top2 + dropOffsetY)
-                finalX = Math.round(left2 + (mult * cellW - assetSizePx) / 2 + dropOffsetX)
-              } else {
-                finalY = Math.round(bottom2 - assetSizePx + dropOffsetY)
-                finalX = Math.round(left2 + (mult * cellW - assetSizePx) / 2 + dropOffsetX)
-              }
-            } else {
-              finalX = Math.round(anchorX - assetSizePx / 2 + dropOffsetX)
-              finalY = Math.round(anchorY - assetSizePx / 2 + dropOffsetY)
-            }
+            finalX = Math.round(snapAnchor.x - assetSizePx / 2 + dropOffsetX)
+            finalY = Math.round(snapAnchor.y - assetSizePx / 2 + dropOffsetY)
           }
 
           // Allow assets to be partially outside the canvas (clipped at edge),
@@ -2732,7 +2126,7 @@ const randomizePattern = () => {
             @dragend="onDragEnd"
             @click.prevent="spawnAssetCentered(asset)"
             class="asset-button"
-            :title="'Snap: ' + asset.snapType"
+            :title="asset.name"
           >
             <img :src="asset.path" :alt="asset.name" class="asset-icon" />
           </div>
@@ -2917,8 +2311,8 @@ const randomizePattern = () => {
                 maskSize: 'contain',
                 WebkitMaskRepeat: 'no-repeat',
                 maskRepeat: 'no-repeat',
-                WebkitMaskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
-                maskPosition: asset.snapType === 'edge' ? 'left center' : 'center',
+                WebkitMaskPosition: 'center',
+                maskPosition: 'center',
                 transform: `rotate(${asset.rotation || 0}deg)`,
                 transformOrigin: 'center center',
               }"

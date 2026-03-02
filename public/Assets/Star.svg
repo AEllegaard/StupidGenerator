@@ -1,13 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 196 196">
-  <defs>
-    <style>
-      .cls-1 {
-        fill: #ff9698;
-      }
-    </style>
-  </defs>
-  <g id="Layer_1-2" data-name="Layer 1">
-    <path class="cls-1" d="M196.05,98.03c-54.14,0-98.03-43.89-98.03-98.03,0,54.14-43.89,98.03-98.03,98.03,54.14,0,98.03,43.89,98.03,98.03,0-54.14,43.89-98.03,98.03-98.03Z"/>
-  </g>
+<svg width="196" height="196" viewBox="0 0 196 196" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_1_14)">
+<path d="M196.05 98.03C141.91 98.03 98.02 54.14 98.02 0C98.02 54.14 54.13 98.03 -0.00999832 98.03C54.13 98.03 98.02 141.92 98.02 196.06C98.02 141.92 141.91 98.03 196.05 98.03Z" fill="#FF9698"/>
+</g>
+<defs>
+<clipPath id="clip0_1_14">
+<rect width="196" height="196" fill="white"/>
+</clipPath>
+</defs>
 </svg>
