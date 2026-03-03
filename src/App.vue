@@ -3,6 +3,46 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 // jsPDF is used to generate a downloadable PDF from the exported raster image
 import { jsPDF } from 'jspdf'
 
+// --- Responsive / device warning ------------------------------------
+// Show a small warning on phone/tablet devices, since the editor is primarily
+// designed for desktop (mouse/keyboard).
+const DEVICE_WARNING_KEY = 'stupidgenerator_device_warning_dismissed_v1'
+const showDeviceWarning = ref(false)
+
+const getIsLikelyMobileOrTablet = () => {
+  try {
+    const w = window.innerWidth || 0
+    const coarse =
+      typeof window.matchMedia === 'function' &&
+      (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches)
+
+    // Treat coarse-pointer devices as mobile/tablet, and also treat smaller
+    // widths as "mobile-ish" even on laptops.
+    return coarse || w <= 1024
+  } catch (e) {
+    return false
+  }
+}
+
+const updateDeviceWarningVisibility = () => {
+  try {
+    const dismissed = localStorage.getItem(DEVICE_WARNING_KEY) === '1'
+    showDeviceWarning.value = !dismissed && getIsLikelyMobileOrTablet()
+  } catch (e) {
+    // If storage is blocked, just show based on device
+    showDeviceWarning.value = getIsLikelyMobileOrTablet()
+  }
+}
+
+const dismissDeviceWarning = () => {
+  showDeviceWarning.value = false
+  try {
+    localStorage.setItem(DEVICE_WARNING_KEY, '1')
+  } catch (e) {
+    // ignore
+  }
+}
+
 const canvasDimensions = [
   //SoMe presets
   { name: 'Instagram Post', width: 1080, height: 1080 },
@@ -271,9 +311,30 @@ const backgroundImages = ref([]) // Array to store placed uploaded images (raste
 const draggedAsset = ref(null)
 const canvasRef = ref(null)
 
+// Measure available space for the canvas so we can scale responsively.
+const canvasColumnRef = ref(null)
+const canvasAvailablePx = ref({ w: 0, h: 0 })
+
+const updateCanvasAvailablePx = () => {
+  try {
+    const el = canvasColumnRef.value
+    if (!el || !el.getBoundingClientRect) return
+    const r = el.getBoundingClientRect()
+    // leave a bit of room for padding + the device warning banner
+    canvasAvailablePx.value = {
+      w: Math.max(0, r.width - 24),
+      h: Math.max(0, r.height - 80),
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 const canvasStyle = computed(() => {
-  const maxWidth = 800 // max width to fit in the canvas area
-  const maxHeight = 600 // max height to fit in the canvas area
+  // Scale canvas to the available column size (responsive), with a sensible
+  // fallback for first render.
+  const maxWidth = canvasAvailablePx.value.w || 800
+  const maxHeight = canvasAvailablePx.value.h || 600
 
   const widthRatio = maxWidth / currentCanvasPreset.value.width
   const heightRatio = maxHeight / currentCanvasPreset.value.height
@@ -402,6 +463,26 @@ const onKeyDown = (e) => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
+
+  // Evaluate mobile/tablet warning on startup and on resize/orientation changes.
+  updateDeviceWarningVisibility()
+  try {
+    window.addEventListener('resize', updateDeviceWarningVisibility)
+    window.addEventListener('orientationchange', updateDeviceWarningVisibility)
+  } catch (e) {
+    // ignore
+  }
+
+  // Measure available canvas space (responsive scaling)
+  await nextTick()
+  updateCanvasAvailablePx()
+  try {
+    window.addEventListener('resize', updateCanvasAvailablePx)
+    window.addEventListener('orientationchange', updateCanvasAvailablePx)
+  } catch (e) {
+    // ignore
+  }
+
   // Wait for DOM updates so canvasRef has correct size, then seed an initial pattern.
   await nextTick()
   // Slight timeout to ensure layout/measurements are stable in all browsers.
@@ -413,7 +494,25 @@ onMounted(async () => {
     }
   }, 50)
 })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  try {
+    window.removeEventListener('resize', updateDeviceWarningVisibility)
+    window.removeEventListener('orientationchange', updateDeviceWarningVisibility)
+    window.removeEventListener('resize', updateCanvasAvailablePx)
+    window.removeEventListener('orientationchange', updateCanvasAvailablePx)
+  } catch (e) {
+    // ignore
+  }
+})
+
+watch(
+  () => [currentCanvasPreset.value?.name, editorMode.value],
+  async () => {
+    await nextTick()
+    updateCanvasAvailablePx()
+  },
+)
 
 // Calculate cell size to ensure perfect squares that fit within canvas
 const cellSize = computed(() => {
@@ -2982,7 +3081,25 @@ const randomizePattern = () => {
     </div>
 
     <!-- Canvas Section -->
-    <div class="canvas m-2">
+    <div ref="canvasColumnRef" class="canvas m-2">
+      <div v-if="showDeviceWarning" class="device-warning" role="alert">
+        <div class="device-warning__text font-object">
+          <span class="device-warning__icon" aria-hidden="true">!</span>
+          <span>
+            This page is not meant for mobile devices or tablets. Please use a desktop for the best
+            experience.
+          </span>
+        </div>
+        <button
+          type="button"
+          class="device-warning__close"
+          @click="dismissDeviceWarning"
+          aria-label="Luk"
+        >
+          ×
+        </button>
+      </div>
+
       <div class="canvas-wrapper">
         <div
           ref="canvasRef"
