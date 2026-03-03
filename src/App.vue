@@ -3011,7 +3011,7 @@ const randomizePattern = () => {
         <select
           @change="handlePresetChange"
           :value="currentCanvasPreset.name"
-          class="font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer savebutton"
+          class="select font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer btn btn--sm"
         >
           <option v-for="preset in canvasDimensions" :key="preset.name" :value="preset.name">
             {{ preset.name }} ({{ preset.width }} x {{ preset.height }}px)
@@ -3091,19 +3091,20 @@ const randomizePattern = () => {
         </div>
 
         <div class="custom-swatch-controls">
-          <div class="custom-swatch-row">
+          <div class="custom-swatch-row my-2">
             <label class="custom-swatch-label font-object">BG</label>
             <input type="color" v-model="selectedBackgroundColor" class="custom-swatch-input" />
             <label class="custom-swatch-label font-object">Asset</label>
             <input type="color" v-model="selectedAssetColor" class="custom-swatch-input" />
+
+            <button
+              type="button"
+              class="btn btn--sm ml-2 custom-swatch-add font-object font-regular p-1 border-2 rounded cursor-pointer"
+              @click="addCustomSwatch"
+            >
+              + Add swatch
+            </button>
           </div>
-          <button
-            type="button"
-            class="savebutton custom-swatch-add font-object font-regular p-1 border-2 rounded cursor-pointer"
-            @click="addCustomSwatch"
-          >
-            + Add swatch
-          </button>
         </div>
 
         <!-- Hidden real file input for uploading SVG assets (always rendered so both modes can open the picker) -->
@@ -3122,13 +3123,19 @@ const randomizePattern = () => {
           <p class="font-object text-xs mb-4 text-gray-500">
             Click to spawn centered. Drag to move.
           </p>
+          <button
+            class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mb-4"
+            @click.prevent="randomizePattern"
+          >
+            Pattern Randomizer
+          </button>
           <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
-          <div class="flex gap-2 mb-4">
+          <div class="flex gap-2 mb-4 w-[95%] items-center">
             <button
               @click="changeAssetSize(1)"
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer',
-                { active: assetMultiplier === 1 },
+                'btn btn--sm px-2 border-2 cursor-pointer',
+                { 'is-active': assetMultiplier === 1 },
               ]"
             >
               x1
@@ -3136,15 +3143,15 @@ const randomizePattern = () => {
             <button
               @click="changeAssetSize(2)"
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer',
-                { active: assetMultiplier === 2 },
+                'btn btn--sm px-2 border-2 cursor-pointer',
+                { 'is-active': assetMultiplier === 2 },
               ]"
             >
               x2
             </button>
 
             <button
-              class="uploadbutton savebutton font-object font-regular px-2 border-2 rounded cursor-pointer"
+              class="btn btn--sm font-object font-regular px-2 border-2 rounded cursor-pointer flex-1"
               @click.prevent="openUploadSvgPicker"
             >
               + Upload asset
@@ -3188,12 +3195,6 @@ const randomizePattern = () => {
             </div>
           </div>
 
-          <button
-            class="savebutton pattern-randomizer ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%]"
-            @click.prevent="randomizePattern"
-          >
-            Pattern Randomizer
-          </button>
         </div>
 
         <!-- Pattern finder-only UI -->
@@ -3203,14 +3204,15 @@ const randomizePattern = () => {
           <p class="font-object text-xs mb-3 text-gray-500">
             Upload svg to be able to drag around.
           </p>
-          <button class="svgupload cursor-pointer" @click.prevent="openUploadSvgPicker">
+          <button class="btn btn--sm cursor-pointer w-[95%]" @click.prevent="openUploadSvgPicker">
             + Upload SVG
           </button>
 
           <h2 class="font-object font-medium text-base mt-10">Controls</h2>
+          <p class="font-object text-xs mb-2 text-gray-500">Enable/disable pattern randomization options.</p>
 
           <button
-            class="savebutton ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-3"
+            class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
             @click.prevent="randomizePatternBackgroundPosition"
           >
             Random
@@ -3221,8 +3223,8 @@ const randomizePattern = () => {
               type="button"
               @click.prevent="randomizePatternControls.scale = !randomizePatternControls.scale"
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer flex-1',
-                { active: randomizePatternControls.scale },
+                'btn btn--sm px-2 border-2 cursor-pointer flex-1',
+                { 'is-active': randomizePatternControls.scale },
               ]"
               :style="{ opacity: randomizePatternControls.scale ? 1 : 0.35 }"
             >
@@ -3232,8 +3234,8 @@ const randomizePattern = () => {
               type="button"
               @click.prevent="randomizePatternControls.x = !randomizePatternControls.x"
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer flex-1',
-                { active: randomizePatternControls.x },
+                'btn btn--sm px-2 border-2 cursor-pointer flex-1',
+                { 'is-active': randomizePatternControls.x },
               ]"
               :style="{ opacity: randomizePatternControls.x ? 1 : 0.35 }"
             >
@@ -3243,8 +3245,8 @@ const randomizePattern = () => {
               type="button"
               @click.prevent="randomizePatternControls.y = !randomizePatternControls.y"
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer flex-1',
-                { active: randomizePatternControls.y },
+                'btn btn--sm px-2 border-2 cursor-pointer flex-1',
+                { 'is-active': randomizePatternControls.y },
               ]"
               :style="{ opacity: randomizePatternControls.y ? 1 : 0.35 }"
             >
@@ -3256,8 +3258,8 @@ const randomizePattern = () => {
                 randomizePatternControls.rotation = !randomizePatternControls.rotation
               "
               :class="[
-                'sizebutton px-2 border-2 cursor-pointer flex-1',
-                { active: randomizePatternControls.rotation },
+                'btn btn--sm px-2 border-2 cursor-pointer flex-1',
+                { 'is-active': randomizePatternControls.rotation },
               ]"
               :style="{ opacity: randomizePatternControls.rotation ? 1 : 0.35 }"
             >
@@ -3357,12 +3359,12 @@ const randomizePattern = () => {
         </p>
 
         <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
-        <div class="flex gap-2 mb-4">
+        <div class="flex gap-2 mb-4 items-center w-[95%]">
           <button
             @click="changeBackgroundImageSize(1)"
             :class="[
-              'sizebutton px-2 border-2 cursor-pointer',
-              { active: backgroundImageMultiplier === 1 },
+              'btn btn--sm px-2 border-2 cursor-pointer',
+              { 'is-active': backgroundImageMultiplier === 1 },
             ]"
           >
             1
@@ -3370,8 +3372,8 @@ const randomizePattern = () => {
           <button
             @click="changeBackgroundImageSize(2)"
             :class="[
-              'sizebutton px-2 border-2 cursor-pointer',
-              { active: backgroundImageMultiplier === 2 },
+              'btn btn--sm px-2 border-2 cursor-pointer',
+              { 'is-active': backgroundImageMultiplier === 2 },
             ]"
           >
             2
@@ -3379,8 +3381,8 @@ const randomizePattern = () => {
           <button
             @click="changeBackgroundImageSize(3)"
             :class="[
-              'sizebutton px-2 border-2 cursor-pointer',
-              { active: backgroundImageMultiplier === 3 },
+              'btn btn--sm px-2 border-2 cursor-pointer',
+              { 'is-active': backgroundImageMultiplier === 3 },
             ]"
           >
             3
@@ -3388,11 +3390,18 @@ const randomizePattern = () => {
           <button
             @click="changeBackgroundImageSize(4)"
             :class="[
-              'sizebutton px-2 border-2 cursor-pointer',
-              { active: backgroundImageMultiplier === 4 },
+              'btn btn--sm px-2 border-2 cursor-pointer',
+              { 'is-active': backgroundImageMultiplier === 4 },
             ]"
           >
             4
+          </button>
+
+          <button
+            class="btn btn--sm font-object font-regular px-2 border-2 rounded cursor-pointer flex-1"
+            @click.prevent="uploadInputRef.click()"
+          >
+            + Upload image
           </button>
         </div>
 
@@ -3405,14 +3414,6 @@ const randomizePattern = () => {
           class="hidden"
           @change="onUploadImage"
         />
-
-        <!-- Styled upload button matching other buttons -->
-        <button
-          class="savebutton uploadimg font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer mb-3"
-          @click.prevent="uploadInputRef.click()"
-        >
-          + Upload image
-        </button>
 
         <!-- Grid of uploaded image thumbnails -->
         <div v-if="uploadedImages.length" class="assets-container grid grid-cols-4 mb-4">
@@ -3437,10 +3438,10 @@ const randomizePattern = () => {
       <div class="ml-3 mt-8">
         <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
         <div class="flex gap-2 mb-4">
-          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
-          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
-          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsPNG">PNG</button>
-          <button class="savebutton px-2 cursor-pointer" @click.prevent="exportAsJPG">JPG</button>
+          <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
+          <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
+          <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPNG">PNG</button>
+          <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsJPG">JPG</button>
         </div>
       </div>
     </div>

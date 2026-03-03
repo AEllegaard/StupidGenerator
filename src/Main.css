@@ -63,6 +63,16 @@ body {
   background-color: #f5f5f5;
   margin: 0;
   overflow: hidden; /* only the sidebar should scroll */
+  font-family:
+    var(--font-object, 'Object'),
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
 }
 
 .maingrid {
@@ -101,6 +111,36 @@ body {
 
 .slidercontainer {
   width: 100%;
+}
+
+/* Select styling (adds a consistent dropdown chevron) */
+.select {
+  -webkit-appearance: none;
+  appearance: none;
+  /* Ensure the chevron stays visible even if other button styles apply */
+  background-color: #ffffff;
+  /* Draw a chevron using CSS gradients so we don't need an asset */
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(17, 24, 39, 0.9) 50%),
+    linear-gradient(135deg, rgba(17, 24, 39, 0.9) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 50%,
+    calc(100% - 11px) 50%;
+  background-size:
+    6px 6px,
+    6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 30px; /* room for the chevron */
+}
+
+/* Keep the chevron on hover (don't overwrite background-image) */
+.select:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.select:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
 }
 
 .slider {
@@ -358,6 +398,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  flex-wrap: nowrap;
 }
 
 .custom-swatch-label {
@@ -367,9 +409,9 @@ body {
 
 .custom-swatch-input {
   /* Match the preset swatch buttons above */
-  width: 34px;
-  height: 34px;
-  padding: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 2px;
   -webkit-appearance: none;
   appearance: none;
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -407,6 +449,13 @@ body {
 .custom-swatch-add {
   width: 100%;
   border-radius: 8px;
+}
+
+/* When used inline inside `.custom-swatch-row`, let it fill the remaining space */
+.custom-swatch-row .custom-swatch-add {
+  width: auto;
+  flex: 1;
+  min-width: 120px;
 }
 
 .color-button {
@@ -593,20 +642,115 @@ body {
 
 /* Pattern-finder toggle removed */
 
-.sizebutton {
-  transition-duration: 0.15s;
+/* --------------------------------------------------------------------------
+   BUTTON SYSTEM (outlined / current look)
+
+   Use `.btn` + optional modifiers:
+   - variants: `.btn--primary` (filled), `.btn--ghost` (minimal)
+   - sizes: `.btn--sm`, `.btn--md`
+   - states: `.is-active`
+   ------------------------------------------------------------------------ */
+
+.btn {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: 1.2;
+  border-radius: 6px;
+  padding: 6px 10px;
   background: transparent;
   color: #111;
-  border: #000000 1px solid;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 120ms ease;
+}
+
+.btn:hover:not(select) {
+  background-color: rgba(0, 0, 0, 0.12);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn--sm {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.btn--md {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+/* Filled variant (use sparingly) */
+.btn--primary {
+  background: #111827;
+  color: #ffffff;
+  border-color: #111827;
+}
+
+.btn--primary:hover {
+  background: #0b1220;
+}
+
+/* Minimal variant */
+.btn--ghost {
+  border-color: transparent;
+}
+
+.btn--ghost:hover {
   border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Toggle/active state (outlined -> filled) */
+.btn.is-active,
+.btn.is-active:hover {
+  background-color: #000000;
+  color: #ffffff;
+  border-color: #000000;
+}
+
+/* Legacy classes mapped to the new system (safe migration) */
+.sizebutton {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: 1.2;
   border-radius: 6px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  background: transparent;
+  color: #111;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 120ms ease;
 }
 
 /* Active state for size buttons when a multiplier is selected */
 .sizebutton.active,
 .sizebutton.active:hover {
+  /* keep legacy `.active` behavior */
   background-color: #000000;
   color: #ffffff;
   border-color: #000000;
@@ -621,15 +765,24 @@ body {
   content: none;
 }
 
+/* savebutton was visually identical to sizebutton */
 .savebutton {
-  transition-duration: 0.15s;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: 1.2;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
   background: transparent;
   color: #111;
-  border: #000000 1px solid;
-  border-color: rgba(0, 0, 0, 0.12);
-  border-radius: 6px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 120ms ease;
 }
 
 .savebutton:hover {
@@ -728,15 +881,25 @@ body {
   outline-offset: 2px;
 }
 
+/* SVG upload button */
 .svgupload {
   width: 95%;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: 1.2;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
   background: transparent;
   color: #111;
-  border: #000000 1px solid;
-  border-color: rgba(0, 0, 0, 0.12);
-  border-radius: 6px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 120ms ease;
 }
 
 .svgupload:hover {
