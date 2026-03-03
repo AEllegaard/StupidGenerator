@@ -262,6 +262,72 @@ const patternBackground = ref({
   rotation: 0,
 })
 
+// --- Pattern finder image background (raster) ------------------------
+// A single uploaded raster image that can replace the Pattern finder background.
+// It moves ONLY when Alt/Option is held down, and has its own scale slider.
+const patternImageBackground = ref(null) // { id, name, dataUrl, x, y, scale, rotation, naturalW, naturalH }
+const patternImageScale = ref(1)
+const uploadPatternImageInputRef = ref(null)
+
+const openUploadPatternImagePicker = () => {
+  const el = uploadPatternImageInputRef.value
+  if (el && typeof el.click === 'function') el.click()
+}
+
+const onUploadPatternImageBackground = (e) => {
+  const files = e?.target?.files
+  if (!files || !files.length) return
+  const file = files[0]
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    const dataUrl = ev?.target?.result
+    if (!dataUrl) return
+
+    pushHistory()
+
+    // Reset transforms
+    patternImageScale.value = 1
+    patternImageBackground.value = {
+      id: Date.now() + Math.floor(Math.random() * 100000),
+      name: file.name || 'Pattern image background',
+      dataUrl,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      scale: 1,
+    }
+
+    // Capture natural dimensions when possible (helps export sizing)
+    try {
+      const img = new Image()
+      img.onload = () => {
+        if (!patternImageBackground.value) return
+        patternImageBackground.value.naturalW = img.naturalWidth || img.width || null
+        patternImageBackground.value.naturalH = img.naturalHeight || img.height || null
+      }
+      img.src = dataUrl
+    } catch (err) {
+      // ignore
+    }
+  }
+  reader.readAsDataURL(file)
+  // reset so the same file can be re-uploaded if needed
+  e.target.value = ''
+}
+
+const removePatternImageBackground = () => {
+  if (!patternImageBackground.value) return
+  pushHistory()
+  patternImageBackground.value = null
+  patternImageScale.value = 1
+}
+
+const updatePatternImageBackgroundScale = (newScale) => {
+  const s = Number(newScale || 1) || 1
+  patternImageScale.value = s
+  if (patternImageBackground.value) patternImageBackground.value.scale = s
+}
+
 // Pattern finder: convert between world-units (stored) and screen pixels (rendered).
 const patternWorldToScreen = (world, scale) => {
   const s = Number(scale || 1) || 1
@@ -484,6 +550,9 @@ const maxRedo = 100
 
 const getSnapshot = () => {
   return {
+    // User uploads (should survive reload)
+    uploadedSvgAssets: JSON.parse(JSON.stringify(uploadedSvgAssets.value || [])),
+    uploadedImages: JSON.parse(JSON.stringify(uploadedImages.value || [])),
     placedAssets: JSON.parse(JSON.stringify(placedAssets.value)),
     backgroundImages: JSON.parse(JSON.stringify(backgroundImages.value)),
     // Pattern finder background may be stashed/removed when switching modes.
@@ -493,10 +562,15 @@ const getSnapshot = () => {
     patternBackground: patternBackground.value
       ? JSON.parse(JSON.stringify(patternBackground.value))
       : null,
+    patternImageBackground: patternImageBackground.value
+      ? JSON.parse(JSON.stringify(patternImageBackground.value))
+      : null,
+    patternImageScale: patternImageScale.value,
     selectedBackgroundColor: selectedBackgroundColor.value,
     selectedAssetColor: selectedAssetColor.value,
     gridSize: gridSize.value,
     currentCanvasPresetName: currentCanvasPreset.value?.name,
+    editorMode: editorMode.value,
   }
 }
 
@@ -518,6 +592,25 @@ const pushHistory = () => {
 
 const applySnapshot = (snap) => {
   if (!snap) return
+  // Restore uploads first so the palette is preserved across reloads.
+  // (We reset the actual canvas content later.)
+  try {
+    if (Array.isArray(snap.uploadedSvgAssets)) {
+      uploadedSvgAssets.value = JSON.parse(JSON.stringify(snap.uploadedSvgAssets || []))
+    }
+  } catch (e) {
+    // ignore
+  }
+  try {
+    if (Array.isArray(snap.uploadedImages)) {
+      uploadedImages.value = JSON.parse(JSON.stringify(snap.uploadedImages || []))
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // We restore the snapshot first, then apply our “fresh on reload” defaults
+  // below.
   placedAssets.value = JSON.parse(JSON.stringify(snap.placedAssets || []))
   backgroundImages.value = JSON.parse(JSON.stringify(snap.backgroundImages || []))
 
@@ -527,6 +620,17 @@ const applySnapshot = (snap) => {
       ...patternBackground.value,
       ...JSON.parse(JSON.stringify(snap.patternBackground)),
     }
+  }
+
+  // Restore Pattern finder image background
+  if (snap.patternImageBackground && typeof snap.patternImageBackground === 'object') {
+    patternImageBackground.value = JSON.parse(JSON.stringify(snap.patternImageBackground))
+  } else {
+    patternImageBackground.value = null
+  }
+  if (snap.patternImageScale != null) {
+    patternImageScale.value = Number(snap.patternImageScale) || 1
+    if (patternImageBackground.value) patternImageBackground.value.scale = patternImageScale.value
   }
   patternBackgroundStash.value = snap.patternBackgroundStash
     ? JSON.parse(JSON.stringify(snap.patternBackgroundStash))
@@ -544,12 +648,23 @@ const applySnapshot = (snap) => {
 
   selectedBackgroundColor.value = snap.selectedBackgroundColor || selectedBackgroundColor.value
   selectedAssetColor.value = snap.selectedAssetColor || selectedAssetColor.value
-  gridSize.value = snap.gridSize || gridSize.value
-  // restore preset by name if available
-  if (snap.currentCanvasPresetName) {
-    const p = canvasDimensions.find((c) => c.name === snap.currentCanvasPresetName)
-    if (p) currentCanvasPreset.value = p
+  // Intentionally do NOT restore gridSize or canvas preset on reload.
+  // (We reset them below so the app always starts from the same baseline.)
+
+  // Restore editor mode when applying snapshots (undo/redo).
+  // For autosave we still want a clean baseline; that's handled by the onMounted
+  // restore flow, not by forcing a mode here.
+  if (snap.editorMode === 'pattern' || snap.editorMode === 'sandbox') {
+    editorMode.value = snap.editorMode
   }
+
+  // NOTE: Don't hard-reset canvas/grid here; applySnapshot is also used by undo/redo.
+  // Any "reset on reload" behavior should happen in restoreAutosave/onMounted.
+
+  // IMPORTANT: Don't auto-stash/remove the Pattern background here.
+  // That rule belongs to `setEditorMode()` (mode transitions), but `applySnapshot()`
+  // is used by undo/redo and autosave restore. Removing the pattern background
+  // during undo can make Pattern finder actions (like Random) appear to "stop working".
 }
 
 const undo = () => {
@@ -765,10 +880,9 @@ const gridCells = computed(() => {
   return Array.from({ length: gridColumns.value * gridRows.value }, (_, i) => i)
 })
 
-// Helper: snap to grid
-// - 1x assets: snap to CENTER of nearest cell
-// - 2x assets: snap to nearest GRID INTERSECTION
-//   (so the 2x tile occupies a clean 2×2 block)
+// Helper: snap anchor for placement.
+// - 1× assets: snap to CENTER of nearest cell
+// - 2×+ assets (and uploaded images): snap to nearest GRID INTERSECTION (corner)
 const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, multiplier = 1) => {
   const cellWidth = canvasWidth / gridColumns.value
   const cellHeight = canvasHeight / Math.max(1, gridRows.value)
@@ -777,8 +891,8 @@ const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, m
   const px = Math.max(0, Math.min(canvasWidth, pointerX))
   const py = Math.max(0, Math.min(canvasHeight, pointerY))
 
-  // 2x (or bigger) should anchor to intersections
   if ((multiplier || 1) > 1) {
+    // Nearest intersection
     const col = Math.round(px / cellWidth)
     const row = Math.round(py / cellHeight)
     const clampedCol = Math.max(0, Math.min(gridColumns.value, col))
@@ -786,7 +900,7 @@ const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, m
     return { x: clampedCol * cellWidth, y: clampedRow * cellHeight }
   }
 
-  // 1x: center of nearest cell
+  // 1×: center of nearest cell
   const col = Math.max(0, Math.min(gridColumns.value - 1, Math.floor(px / cellWidth)))
   const row = Math.max(0, Math.min(gridRows.value - 1, Math.floor(py / cellHeight)))
   return { x: (col + 0.5) * cellWidth, y: (row + 0.5) * cellHeight }
@@ -857,7 +971,7 @@ const onDrop = (event) => {
   // Manual placement: allow Star to be 1x if the user picked 1x.
   const forcedCurrentMultiplier = currentMultiplier
 
-  // Snap anchor: 1x -> cell center, 2x -> intersection
+  // Snap anchor: 1× -> cell center, 2×+ -> intersection
   const snapAnchor = computeSnapFromPointer(
     x,
     y,
@@ -868,20 +982,38 @@ const onDrop = (event) => {
   const snappedX = snapAnchor.x
   const snappedY = snapAnchor.y
 
-  // Use current canvas cell width and the selected multiplier so the new
-  // placed asset will scale with the grid when the slider changes.
+  // Render size:
+  // - SVG assets: grid-based square (cellWidth * multiplier)
+  // - Uploaded images: width is grid-based; height is derived from natural
+  //   image ratio (when available) to avoid distortion.
   const currentAssetSize = Math.round(cellWidth * forcedCurrentMultiplier)
+  const renderW =
+    dragged && dragged.isUploaded
+      ? Math.round(dragged.renderW || currentAssetSize)
+      : currentAssetSize
+  const renderH = (() => {
+    if (!(dragged && dragged.isUploaded)) return currentAssetSize
+    if (dragged.renderH) return Math.round(dragged.renderH)
+    const nw = Number(dragged.naturalW || 0)
+    const nh = Number(dragged.naturalH || 0)
+    if (nw > 0 && nh > 0) return Math.round(renderW * (nh / nw))
+    return currentAssetSize
+  })()
   // Only apply horizontal asset-specific offset for 1x assets — larger
   // multipliers may amplify the offset too much (Half Circle padding fix).
   const dropOffsetX = (currentMultiplier === 1 ? dragged.offsetX || 0 : 0) * currentAssetSize
   const dropOffsetY = (dragged.offsetY || 0) * currentAssetSize
 
-  // Compute top-left:
-  // - 1x: center on the cell center anchor
-  // - 2x: anchor is intersection, so top-left should be on that intersection
-  //   to occupy a clean 2×2 block.
+  // Compute top-left.
+  // - Uploaded images: always snap top-left to intersections.
+  // - SVG assets:
+  //   * 1x: anchor is cell center -> center the asset
+  //   * >1x: anchor is intersection -> top-left on that intersection
   let finalX, finalY
-  if (forcedCurrentMultiplier > 1) {
+  if (dragged && dragged.isUploaded) {
+    finalX = snappedX
+    finalY = snappedY
+  } else if (forcedCurrentMultiplier > 1) {
     finalX = snappedX
     finalY = snappedY
   } else {
@@ -897,8 +1029,8 @@ const onDrop = (event) => {
   // placement and small negative values caused by tiny offsets (like -0.001)
   finalX = Math.round(finalX)
   finalY = Math.round(finalY)
-  finalX = Math.max(0, Math.min(finalX, canvasWidth - currentAssetSize))
-  finalY = Math.max(0, Math.min(finalY, canvasHeight - currentAssetSize))
+  finalX = Math.max(0, Math.min(finalX, canvasWidth - renderW))
+  finalY = Math.max(0, Math.min(finalY, canvasHeight - renderH))
 
   // snap calculations executed
   // record state before adding new asset so Ctrl+Z can undo
@@ -911,6 +1043,8 @@ const onDrop = (event) => {
     rotation: 0,
     id: Date.now(),
     multiplier: currentMultiplier,
+    // persist computed render dimensions for consistent drag/export behavior
+    ...(dragged && dragged.isUploaded ? { renderW, renderH } : {}),
   }
   // Uploaded raster images always go to the background layer
   if (newItem.isUploaded) backgroundImages.value.push(newItem)
@@ -954,7 +1088,7 @@ const spawnAssetCentered = (asset) => {
     let currentMultiplier = assetMultiplier.value || 1
     if (asset && asset.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
 
-    // Snap anchor: 1x -> cell center, 2x -> intersection
+    // Snap anchor: 1× -> cell center, 2×+ -> intersection
     const snapAnchor = computeSnapFromPointer(
       centerX,
       centerY,
@@ -968,14 +1102,17 @@ const spawnAssetCentered = (asset) => {
     const dropOffsetX = (currentMultiplier === 1 ? asset.offsetX || 0 : 0) * currentAssetSize
     const dropOffsetY = (asset.offsetY || 0) * currentAssetSize
 
-    // Placement:
-    // - 1x: center on the cell center anchor
-    // - 2x: anchor is intersection -> top-left on that intersection
     let finalX, finalY
-    if (currentMultiplier > 1) {
+    if (asset && asset.isUploaded) {
+      // Uploaded images: snap top-left to intersections
+      finalX = Math.round(snapAnchor.x + dropOffsetX)
+      finalY = Math.round(snapAnchor.y + dropOffsetY)
+    } else if (currentMultiplier > 1) {
+      // Grid-aligned block
       finalX = Math.round(snapAnchor.x + dropOffsetX)
       finalY = Math.round(snapAnchor.y + dropOffsetY)
     } else {
+      // 1× SVG: anchor is cell center -> center asset
       finalX = Math.round(snapAnchor.x - currentAssetSize / 2 + dropOffsetX)
       finalY = Math.round(snapAnchor.y - currentAssetSize / 2 + dropOffsetY)
     }
@@ -1162,6 +1299,29 @@ const patternMode = ref('checkerboard')
 const startMovingAsset = (asset, event, el = null) => {
   draggedPlacedAsset.value = asset
 
+  // Pattern finder raster image background: translation is stored in screen px
+  // offsets from canvas center. Make dragging stable by capturing the pointer
+  // offset from the current image rect.
+  if (editorMode.value === 'pattern' && asset && patternImageBackground.value === asset) {
+    try {
+      const canvasRect = canvasRef.value.getBoundingClientRect()
+      const ptrX = event.clientX - canvasRect.left
+      const ptrY = event.clientY - canvasRect.top
+      const nw = Number(asset.naturalW || 0) || 1
+      const nh = Number(asset.naturalH || 0) || 1
+      const cover = Math.max(canvasRect.width / nw, canvasRect.height / nh)
+      const s = Number(asset.scale || 1) || 1
+      const w = nw * cover * s
+      const h = nh * cover * s
+      const left = canvasRect.width / 2 - w / 2 + (asset.x || 0)
+      const top = canvasRect.height / 2 - h / 2 + (asset.y || 0)
+      dragOffset.value = { x: ptrX - left, y: ptrY - top }
+      draggedElement.value = el
+    } catch (e) {
+      // fallback to default logic below
+    }
+  }
+
   // Pattern finder background uses a fixed pivot at canvas center (50%/50%).
   // While dragging, we must NOT let the pivot move; instead we update asset.x/y
   // (translation) such that the point the user grabbed stays under the pointer.
@@ -1326,6 +1486,30 @@ const onCanvasPointerUp = (event) => {
 // topmost background image under the cursor.
 const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
   if (!canvasRef.value) return null
+
+  // Pattern finder raster image background: centered cover image
+  // Only draggable with Alt/Option (handled by pointerdown caller).
+  if (editorMode.value === 'pattern' && patternImageBackground.value) {
+    try {
+      const rect = canvasRef.value.getBoundingClientRect()
+      const bg = patternImageBackground.value
+      // cover sizing
+      const nw = Number(bg.naturalW || 0) || 1
+      const nh = Number(bg.naturalH || 0) || 1
+      const cover = Math.max(rect.width / nw, rect.height / nh)
+      const s = Number(bg.scale || 1) || 1
+      const w = nw * cover * s
+      const h = nh * cover * s
+      const left = rect.width / 2 - w / 2 + (bg.x || 0)
+      const top = rect.height / 2 - h / 2 + (bg.y || 0)
+      if (canvasX >= left && canvasX <= left + w && canvasY >= top && canvasY <= top + h) {
+        return { ...bg, isPatternImageBackground: true }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
   // iterate from last to first so the most recently placed one wins
   for (let i = backgroundImages.value.length - 1; i >= 0; i--) {
     const img = backgroundImages.value[i]
@@ -1358,12 +1542,26 @@ const onCanvasPointerDown = (event) => {
   // Don't interfere with palette HTML5 drag/drop.
   if (draggedAsset.value) return
 
+  // Pattern finder raster image background should ONLY move with Alt/Option.
+  if (editorMode.value === 'pattern' && patternImageBackground.value && !event.altKey) return
+
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const x = event.clientX - canvasRect.left
   const y = event.clientY - canvasRect.top
 
   const hit = findTopmostBackgroundImageAt(x, y)
   if (!hit) return
+
+  // Pattern finder raster image background: set as dragged object.
+  if (hit && hit.isPatternImageBackground) {
+    // Use the actual reactive object as the dragged asset.
+    const real = patternImageBackground.value
+    if (!real) return
+    const el = canvasRef.value.querySelector(`.pattern-image-bg`) || null
+    startMovingAsset(real, event, el)
+    event.preventDefault()
+    return
+  }
 
   // Find the actual element so offset uses its rendered box (rotation etc.).
   const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hit.id}"]`)
@@ -1373,6 +1571,33 @@ const onCanvasPointerDown = (event) => {
 
 const onCanvasMouseMove = (event) => {
   if (!draggedPlacedAsset.value || !canvasRef.value) return
+
+  // Pattern finder raster image background: move freely (no grid snapping),
+  // only when Alt/Option is held down (enforced by pointerdown guard).
+  if (editorMode.value === 'pattern' && patternImageBackground.value === draggedPlacedAsset.value) {
+    draggedDuringInteraction.value = true
+    const canvasRect = canvasRef.value.getBoundingClientRect()
+    const mouseX = event.clientX - canvasRect.left
+    const mouseY = event.clientY - canvasRect.top
+
+    const bg = draggedPlacedAsset.value
+    const nw = Number(bg.naturalW || 0) || 1
+    const nh = Number(bg.naturalH || 0) || 1
+    const cover = Math.max(canvasRect.width / nw, canvasRect.height / nh)
+    const s = Number(bg.scale || 1) || 1
+    const w = nw * cover * s
+    const h = nh * cover * s
+
+    const left = mouseX - (dragOffset.value.x || 0)
+    const top = mouseY - (dragOffset.value.y || 0)
+
+    // Store offsets from canvas center
+    const nextX = Math.round(left - (canvasRect.width / 2 - w / 2))
+    const nextY = Math.round(top - (canvasRect.height / 2 - h / 2))
+    bg.x = nextX
+    bg.y = nextY
+    return
+  }
 
   // Pattern finder background should move freely (no grid snapping).
   if (
@@ -1782,11 +2007,16 @@ const onCanvasMouseUp = (event) => {
 
     // Allow assets to be partially outside the canvas (so they're clipped by the edge).
     // Keep at least 1px visible inside the canvas to avoid fully losing the asset.
+    // For uploaded images, use renderW/renderH (which represent N grid squares).
     const canvasRect = canvasRef.value.getBoundingClientRect()
     const canvasWidth = canvasRect.width
     const canvasHeight = canvasRect.height
-    const minX = -Math.floor(currentAssetSize) + 1
-    const minY = -Math.floor(currentAssetSize) + 1
+    const renderW =
+      asset && asset.isUploaded ? Math.round(asset.renderW || currentAssetSize) : currentAssetSize
+    const renderH =
+      asset && asset.isUploaded ? Math.round(asset.renderH || currentAssetSize) : currentAssetSize
+    const minX = -Math.floor(renderW) + 1
+    const minY = -Math.floor(renderH) + 1
     const maxX = Math.max(1, canvasWidth - 1)
     const maxY = Math.max(1, canvasHeight - 1)
 
@@ -2193,6 +2423,29 @@ const getExportSVGStringAsync = async () => {
     selectedBackgroundColor.value,
   )}"/>\n`
 
+  // Pattern finder raster image background (placed behind everything)
+  if (patternImageBackground.value && patternImageBackground.value.dataUrl) {
+    try {
+      const bg = patternImageBackground.value
+      const nw = Number(bg.naturalW || 0) || 1
+      const nh = Number(bg.naturalH || 0) || 1
+      const cover = Math.max(exportW / nw, exportH / nh)
+      const s = Number(bg.scale || 1) || 1
+      const w = nw * cover * s
+      const h = nh * cover * s
+      const x = exportW / 2 - w / 2 + (Number(bg.x || 0) || 0)
+      const y = exportH / 2 - h / 2 + (Number(bg.y || 0) || 0)
+      const rot = Number(bg.rotation || 0) || 0
+      const cx = x + w / 2
+      const cy = y + h / 2
+      svg += `<g transform="rotate(${rot} ${cx} ${cy})">\n`
+      svg += `<image href="${svgEscape(bg.dataUrl)}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" />\n`
+      svg += `</g>\n`
+    } catch (e) {
+      // ignore
+    }
+  }
+
   // Background images (uploaded) are rendered first so they sit under assets.
   // NOTE: Pattern finder background SVG is stored in backgroundImages too, but
   // it uses a different coordinate model (center anchored + scale).
@@ -2251,11 +2504,19 @@ const getExportSVGStringAsync = async () => {
       continue
     }
 
-    // Normal uploaded images: top-left anchored squares
+    // Normal uploaded images: top-left anchored; preserve aspect ratio when possible
     const rx = (a.x || 0) * scale
     const ry = (a.y || 0) * scale
-    const rw = getAssetPixelSize(a) * scale
-    const rh = rw
+    const rwBase = a.renderW || getAssetPixelSize(a)
+    const rhBase = (() => {
+      if (a.renderH) return a.renderH
+      const nw = Number(a.naturalW || 0)
+      const nh = Number(a.naturalH || 0)
+      if (nw > 0 && nh > 0) return rwBase * (nh / nw)
+      return rwBase
+    })()
+    const rw = rwBase * scale
+    const rh = rhBase * scale
     const rotation = a.rotation || 0
     const cx = rx + rw / 2
     const cy = ry + rh / 2
@@ -2345,12 +2606,19 @@ const exportAsSVG = async () => {
   downloadBlob(blob, `${currentCanvasPreset.value.name || 'canvas'}.svg`)
 }
 
-const exportRasterFromSVG = async (type = 'image/png', quality = 0.92) => {
+// Export scale (supersampling): higher = sharper edges + better raster quality.
+// 1 = native preset resolution, 2/3 = larger raster (user can downscale later).
+const exportScale = ref(2)
+
+const exportRasterFromSVG = async (type = 'image/png', quality = 0.92, scaleFactor = null) => {
   // Build an inlined SVG (assets embedded) and rasterize it to a data URL.
   const svgString = await getExportSVGStringAsync()
   if (!svgString) return null
   const exportW = currentCanvasPreset.value.width
   const exportH = currentCanvasPreset.value.height
+  const sf = Number(scaleFactor || exportScale.value || 1) || 1
+  const outW = Math.max(1, Math.round(exportW * sf))
+  const outH = Math.max(1, Math.round(exportH * sf))
   const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
   const url = URL.createObjectURL(svgBlob)
   try {
@@ -2362,15 +2630,22 @@ const exportRasterFromSVG = async (type = 'image/png', quality = 0.92) => {
       img.src = url
     })
     const canvas = document.createElement('canvas')
-    canvas.width = exportW
-    canvas.height = exportH
+    canvas.width = outW
+    canvas.height = outH
     const ctx = canvas.getContext('2d')
+    // Prefer highest-quality resampling when shapes/images are rasterized.
+    try {
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+    } catch (e) {
+      // ignore (older browsers)
+    }
     // White background for JPG (SVG may be transparent)
     if (type === 'image/jpeg') {
       ctx.fillStyle = selectedBackgroundColor.value || '#ffffff'
-      ctx.fillRect(0, 0, exportW, exportH)
+      ctx.fillRect(0, 0, outW, outH)
     }
-    ctx.drawImage(img, 0, 0, exportW, exportH)
+    ctx.drawImage(img, 0, 0, outW, outH)
     const dataUrl = canvas.toDataURL(type, quality)
     URL.revokeObjectURL(url)
     return dataUrl
@@ -2465,12 +2740,39 @@ const onUploadImage = (e) => {
   for (const file of files) {
     const reader = new FileReader()
     reader.onload = (ev) => {
-      uploadedImages.value.push({
-        name: file.name,
-        path: ev.target.result,
-        dataUrl: ev.target.result,
-        isUploaded: true,
-      })
+      const dataUrl = ev.target.result
+
+      // Capture the image's natural dimensions so we can preserve aspect ratio
+      // when rendering and exporting.
+      try {
+        const img = new Image()
+        img.onload = () => {
+          uploadedImages.value.push({
+            name: file.name,
+            path: dataUrl,
+            dataUrl,
+            isUploaded: true,
+            naturalW: img.naturalWidth || img.width || null,
+            naturalH: img.naturalHeight || img.height || null,
+          })
+        }
+        img.onerror = () => {
+          uploadedImages.value.push({
+            name: file.name,
+            path: dataUrl,
+            dataUrl,
+            isUploaded: true,
+          })
+        }
+        img.src = dataUrl
+      } catch (e) {
+        uploadedImages.value.push({
+          name: file.name,
+          path: dataUrl,
+          dataUrl,
+          isUploaded: true,
+        })
+      }
     }
     reader.readAsDataURL(file)
   }
@@ -3269,6 +3571,50 @@ const randomizePattern = () => {
             + Upload SVG
           </button>
 
+          <h2 class="font-object font-medium text-base mt-10">Upload image background</h2>
+          <p class="font-object text-xs mb-3 text-gray-500">
+            Upload an image that replaces the background. Click to upload, then
+            <strong>hold alt/option down and drag to move.</strong>
+          </p>
+
+          <div class="flex gap-2 w-[95%] mb-2">
+            <button
+              class="btn btn--sm cursor-pointer flex-1"
+              @click.prevent="openUploadPatternImagePicker"
+            >
+              + Upload image
+            </button>
+            <button
+              v-if="patternImageBackground"
+              class="btn btn--sm cursor-pointer px-2"
+              @click.prevent="removePatternImageBackground"
+              title="Remove"
+            >
+              ×
+            </button>
+          </div>
+
+          <input
+            ref="uploadPatternImageInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden"
+            @change="onUploadPatternImageBackground"
+          />
+
+          <div v-if="patternImageBackground" class="slidercontainer w-[95%] mb-2">
+            <p class="font-object text-xs mb-1 text-gray-900">Scale</p>
+            <input
+              class="slider"
+              type="range"
+              min="0.25"
+              max="3"
+              step="0.01"
+              :value="patternImageScale"
+              @input="updatePatternImageBackgroundScale($event.target.value)"
+            />
+          </div>
+
           <h2 class="font-object font-medium text-base mt-10">Controls</h2>
           <p class="font-object text-xs mb-2 text-gray-500">
             Enable/disable pattern randomization options.
@@ -3500,6 +3846,13 @@ const randomizePattern = () => {
       </div>
       <div class="ml-3 mt-8">
         <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
+        <div class="mb-2">
+          <label class="font-object text-xs block mb-1">Export quality (scale)</label>
+          <select v-model.number="exportScale" class="select w-full">
+            <option :value="2">Sharp</option>
+            <option :value="3">Very sharp</option>
+          </select>
+        </div>
         <div class="flex gap-2 mb-4">
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
@@ -3545,6 +3898,55 @@ const randomizePattern = () => {
           @mouseup="onCanvasMouseUp"
           @mouseleave="onCanvasMouseUp"
         >
+          <!-- Pattern finder raster image background (full-cover). Drag ONLY with Alt/Option. -->
+          <img
+            v-if="
+              editorMode === 'pattern' && patternImageBackground && patternImageBackground.dataUrl
+            "
+            class="pattern-image-bg"
+            draggable="false"
+            :src="patternImageBackground.dataUrl"
+            :alt="patternImageBackground.name || 'Pattern image background'"
+            :style="
+              (() => {
+                try {
+                  const bg = patternImageBackground
+                  const nw = Number(bg.naturalW || 0) || 1
+                  const nh = Number(bg.naturalH || 0) || 1
+                  const rect = canvasRef
+                    ? canvasRef.getBoundingClientRect()
+                    : { width: 1, height: 1 }
+                  const cover = Math.max(rect.width / nw, rect.height / nh)
+                  const s = Number(bg.scale || 1) || 1
+                  const w = nw * cover * s
+                  const h = nh * cover * s
+                  return {
+                    position: 'absolute',
+                    left: rect.width / 2 - w / 2 + (bg.x || 0) + 'px',
+                    top: rect.height / 2 - h / 2 + (bg.y || 0) + 'px',
+                    width: w + 'px',
+                    height: h + 'px',
+                    objectFit: 'cover',
+                    zIndex: 0,
+                    pointerEvents: 'none',
+                    transform: `rotate(${bg.rotation || 0}deg)`,
+                    transformOrigin: 'center center',
+                  }
+                } catch (e) {
+                  return {
+                    position: 'absolute',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    zIndex: 0,
+                    pointerEvents: 'none',
+                  }
+                }
+              })()
+            "
+          />
+
           <!-- Background images layer (under assets) -->
           <div
             class="background-layer"
@@ -3608,7 +4010,7 @@ const randomizePattern = () => {
                   left: (img.x || 0) + 'px',
                   top: (img.y || 0) + 'px',
                   width: getAssetPixelSize(img) + 'px',
-                  height: getAssetPixelSize(img) + 'px',
+                  height: 'auto',
                   transform: `rotate(${img.rotation || 0}deg)`,
                   transformOrigin: 'center center',
                   objectFit: 'contain',
