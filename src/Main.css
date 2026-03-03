@@ -61,6 +61,8 @@
 
 body {
   background-color: #f5f5f5;
+  margin: 0;
+  overflow: hidden; /* only the sidebar should scroll */
 }
 
 .maingrid {
@@ -73,7 +75,7 @@ body {
 
 /* Allow the canvas column to scroll horizontally/vertically if the canvas has to stay large */
 .canvas {
-  overflow: auto;
+  overflow: hidden; /* prevent scrolling in canvas column */
 }
 
 /* Left UI sidebar: scrollable independently of the canvas */
