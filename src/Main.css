@@ -239,6 +239,7 @@ body {
   position: relative;
   overflow: hidden;
   padding: 0;
+  touch-action: none; /* allow custom drag handling via pointer events */
 }
 
 .canvas-preset.dragging-out {
@@ -281,8 +282,14 @@ body {
 .color-presets {
   display: flex;
   gap: 8px;
+  row-gap: 8px;
+  flex-wrap: wrap;
   margin-top: 8px;
   width: 95%;
+}
+
+.color-presets--custom {
+  margin-top: 10px;
 }
 
 .color-button {
@@ -331,8 +338,12 @@ body {
 .color-swatch {
   width: 100%;
   height: 100%;
-  border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) inset;
+  /* Only the preview box should look rounded (not necessarily the whole button) */
+  border-radius: 6px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .custom-swatch-controls {
@@ -355,27 +366,61 @@ body {
 }
 
 .custom-swatch-input {
+  /* Match the preset swatch buttons above */
   width: 34px;
   height: 34px;
-  padding: 0;
+  padding: 4px;
+  -webkit-appearance: none;
+  appearance: none;
   border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-  background: white;
+  outline: none;
+  box-shadow: none;
+  border-radius: 6px;
+  background: transparent;
   cursor: pointer;
+}
+
+.custom-swatch-input:hover {
+  background-color: rgba(0, 0, 0, 0.12);
+}
+
+.custom-swatch-input:focus-visible {
+  border-color: #000;
+}
+
+/* Remove inner padding/border in the native color preview for WebKit browsers */
+.custom-swatch-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.custom-swatch-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 6px;
+}
+
+/* Firefox */
+.custom-swatch-input::-moz-color-swatch {
+  border: none;
+  border-radius: 6px;
 }
 
 .custom-swatch-add {
   width: 100%;
+  border-radius: 8px;
 }
 
 .color-button {
   position: relative;
+  border-radius: 8px;
+  /* Don't clip the delete × button which sits slightly outside */
+  overflow: visible;
 }
 
 .custom-swatch-remove {
   position: absolute;
   top: -8px;
   right: -8px;
+  z-index: 3;
   width: 18px;
   height: 18px;
   border-radius: 999px;

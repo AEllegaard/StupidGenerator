@@ -119,29 +119,43 @@ const onUploadSvgAsset = (e) => {
           // The render layer clips anything outside the canvas.
           pushHistory()
 
-          backgroundImages.value = [
-            {
-              id: Date.now() + Math.floor(Math.random() * 100000),
-              name: file.name || 'Pattern background SVG',
-              path: dataUrl,
-              dataUrl,
-              isUploaded: true,
-              // Offsets from canvas center (used by drag + sliders)
-              x: patternBackground.value.x || 0,
-              y: patternBackground.value.y || 0,
-              rotation: patternBackground.value.rotation || 0,
-              // Explicit render size in pixels for pattern-finder background.
-              // We render this behind the viewport; anything outside is clipped.
-              renderW: 6000,
-              renderH: 6000,
-              scale: patternBackground.value.scale || 1,
-              multiplier: 0,
-            },
-          ]
+          // Reset sliders/transform to defaults when a new background is uploaded.
+          patternBackground.value = {
+            scale: 1,
+            x: 0,
+            y: 0,
+            rotation: 0,
+          }
 
-          // Also clear any placed SVG assets so focus stays on the background.
-          // (Safe default; remove if you want to keep existing assets.)
-          placedAssets.value = []
+          // Remove only the previous Pattern finder background SVG (identified by renderW/renderH).
+          // Keep other background images and keep placed assets.
+          patternBackgroundStash.value = null
+          const existing = (backgroundImages.value || []).filter(
+            (img) => !(img && img.renderW && img.renderH),
+          )
+
+          const nextBg = {
+            id: Date.now() + Math.floor(Math.random() * 100000),
+            name: file.name || 'Pattern background SVG',
+            path: dataUrl,
+            dataUrl,
+            isUploaded: true,
+            // Offsets from canvas center (used by drag + sliders)
+            x: 0,
+            y: 0,
+            rotation: 0,
+            // Explicit render size in pixels for pattern-finder background.
+            // We render this behind the viewport; anything outside is clipped.
+            renderW: 6000,
+            renderH: 6000,
+            scale: 1,
+            multiplier: 0,
+          }
+
+          backgroundImages.value = [nextBg, ...existing]
+
+          // Keep stash in sync so switching modes still restores the newest background.
+          patternBackgroundStash.value = nextBg
         } catch (err) {
           console.warn('Pattern finder SVG background insert failed', err)
         }
@@ -392,6 +406,10 @@ const selectedAssetColor = ref(colorPresets.value[0].asset)
 
 const canInvertColors = computed(() => (colorPresets.value || []).length >= 2)
 
+// Keep predefined presets on the top row; render custom swatches in a row underneath.
+const predefinedPresets = computed(() => (colorPresets.value || []).filter((p) => p && !p.isCustom))
+const customPresets = computed(() => (colorPresets.value || []).filter((p) => p && p.isCustom))
+
 const formatColor = (v) => {
   const s = String(v || '').trim()
   if (!s) return null
@@ -448,6 +466,13 @@ const getSnapshot = () => {
   return {
     placedAssets: JSON.parse(JSON.stringify(placedAssets.value)),
     backgroundImages: JSON.parse(JSON.stringify(backgroundImages.value)),
+    // Pattern finder background may be stashed/removed when switching modes.
+    patternBackgroundStash: patternBackgroundStash.value
+      ? JSON.parse(JSON.stringify(patternBackgroundStash.value))
+      : null,
+    patternBackground: patternBackground.value
+      ? JSON.parse(JSON.stringify(patternBackground.value))
+      : null,
     selectedBackgroundColor: selectedBackgroundColor.value,
     selectedAssetColor: selectedAssetColor.value,
     gridSize: gridSize.value,
@@ -475,6 +500,28 @@ const applySnapshot = (snap) => {
   if (!snap) return
   placedAssets.value = JSON.parse(JSON.stringify(snap.placedAssets || []))
   backgroundImages.value = JSON.parse(JSON.stringify(snap.backgroundImages || []))
+
+  // Restore pattern background slider state + stash.
+  if (snap.patternBackground && typeof snap.patternBackground === 'object') {
+    patternBackground.value = {
+      ...patternBackground.value,
+      ...JSON.parse(JSON.stringify(snap.patternBackground)),
+    }
+  }
+  patternBackgroundStash.value = snap.patternBackgroundStash
+    ? JSON.parse(JSON.stringify(snap.patternBackgroundStash))
+    : null
+
+  // Ensure the pattern background exists in backgroundImages if it was stashed.
+  try {
+    const exists = (backgroundImages.value || []).some((img) => img && img.renderW && img.renderH)
+    if (!exists && patternBackgroundStash.value) {
+      backgroundImages.value = [patternBackgroundStash.value, ...(backgroundImages.value || [])]
+    }
+  } catch (e) {
+    // ignore
+  }
+
   selectedBackgroundColor.value = snap.selectedBackgroundColor || selectedBackgroundColor.value
   selectedAssetColor.value = snap.selectedAssetColor || selectedAssetColor.value
   gridSize.value = snap.gridSize || gridSize.value
@@ -513,6 +560,47 @@ const redo = () => {
   applySnapshot(snap)
 }
 
+// --- Autosave / Restore (localStorage) ---------------------------------
+// Persists the current working state so it survives reloads / closing the tab.
+const AUTOSAVE_KEY = 'stupidgenerator_autosave_v1'
+const _autosaveRaf = { id: 0, lastStr: '' }
+
+const saveAutosaveNow = () => {
+  try {
+    const snap = getSnapshot()
+    const str = JSON.stringify(snap)
+    if (str === _autosaveRaf.lastStr) return
+    _autosaveRaf.lastStr = str
+    localStorage.setItem(AUTOSAVE_KEY, str)
+  } catch (e) {
+    console.warn('autosave failed', e)
+  }
+}
+
+const scheduleAutosave = () => {
+  try {
+    if (_autosaveRaf.id) cancelAnimationFrame(_autosaveRaf.id)
+  } catch (e) {}
+  _autosaveRaf.id = requestAnimationFrame(() => {
+    _autosaveRaf.id = 0
+    saveAutosaveNow()
+  })
+}
+
+const restoreAutosave = () => {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY)
+    if (!raw) return false
+    const snap = JSON.parse(raw)
+    if (!snap || typeof snap !== 'object') return false
+    applySnapshot(snap)
+    return true
+  } catch (e) {
+    console.warn('restore autosave failed', e)
+    return false
+  }
+}
+
 // key handler for Ctrl+Z / Cmd+Z
 const onKeyDown = (e) => {
   const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
@@ -531,6 +619,9 @@ onMounted(async () => {
 
   // Load any user-defined color swatches.
   loadCustomSwatches()
+
+  // Restore last session (if any) before we do any initial randomization.
+  const restored = restoreAutosave()
 
   // Evaluate mobile/tablet warning on startup and on resize/orientation changes.
   updateDeviceWarningVisibility()
@@ -552,18 +643,25 @@ onMounted(async () => {
   }
 
   // Wait for DOM updates so canvasRef has correct size, then seed an initial pattern.
+  // Only do this if we *didn't* restore an autosave.
   await nextTick()
-  // Slight timeout to ensure layout/measurements are stable in all browsers.
-  setTimeout(() => {
-    try {
-      randomizePattern()
-    } catch (e) {
-      console.warn('initial randomizePattern failed', e)
-    }
-  }, 50)
+  if (!restored) {
+    // Slight timeout to ensure layout/measurements are stable in all browsers.
+    setTimeout(() => {
+      try {
+        randomizePattern()
+      } catch (e) {
+        console.warn('initial randomizePattern failed', e)
+      }
+    }, 50)
+  }
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
+  // Best-effort save on exit
+  try {
+    saveAutosaveNow()
+  } catch (e) {}
   try {
     window.removeEventListener('resize', updateDeviceWarningVisibility)
     window.removeEventListener('orientationchange', updateDeviceWarningVisibility)
@@ -573,6 +671,24 @@ onBeforeUnmount(() => {
     // ignore
   }
 })
+
+// Autosave whenever the core working state changes.
+watch(
+  () => [
+    placedAssets.value,
+    backgroundImages.value,
+    patternBackgroundStash.value,
+    patternBackground.value,
+    selectedBackgroundColor.value,
+    selectedAssetColor.value,
+    gridSize.value,
+    currentCanvasPreset.value?.name,
+  ],
+  () => {
+    scheduleAutosave()
+  },
+  { deep: true },
+)
 
 watch(
   () => [currentCanvasPreset.value?.name, editorMode.value],
@@ -768,7 +884,11 @@ const onDrop = (event) => {
   }
   // Uploaded raster images always go to the background layer
   if (newItem.isUploaded) backgroundImages.value.push(newItem)
-  else placedAssets.value.push(newItem)
+  else {
+    // Store the chosen asset tint at placement time so exports are stable.
+    newItem.color = newItem.color || selectedAssetColor.value
+    placedAssets.value.push(newItem)
+  }
   // hide trash after a successful drop on canvas
   trashVisible.value = false
   draggedOverTrash.value = false
@@ -845,7 +965,11 @@ const spawnAssetCentered = (asset) => {
     }
     // Uploaded raster images always go under assets
     if (newItem.isUploaded) backgroundImages.value.push(newItem)
-    else placedAssets.value.push(newItem)
+    else {
+      // Store the chosen asset tint at placement time so exports are stable.
+      newItem.color = newItem.color || selectedAssetColor.value
+      placedAssets.value.push(newItem)
+    }
   } catch (e) {
     console.debug('spawnAssetCentered failed', e)
   }
@@ -902,6 +1026,55 @@ const updatePatternBackgroundScale = (newScale) => {
   // bg.x/bg.y are world units
   patternBackground.value.x = nextX
   patternBackground.value.y = nextY
+}
+
+// Pattern finder: which controls Random should affect
+const randomizePatternControls = ref({
+  scale: true,
+  x: true,
+  y: true,
+  rotation: true,
+})
+
+// Pattern finder: randomize the uploaded background SVG position.
+// Keeps everything in WORLD units (patternBackground.x/y and bg.x/y).
+const randomizePatternBackgroundPosition = () => {
+  const bg = (backgroundImages.value || []).find((img) => img && img.renderW && img.renderH)
+  if (!bg) return
+  pushHistory()
+
+  // Reasonable range (world units). We keep it within the slider bounds.
+  const range = 2000
+  const nextX = Math.round((Math.random() * 2 - 1) * range)
+  const nextY = Math.round((Math.random() * 2 - 1) * range)
+
+  // Scale: match slider bounds (0.1–3). Bias slightly towards 1 for nicer results.
+  const minScale = 0.1
+  const maxScale = 3
+  const r = Math.random()
+  const biased = r * r // more values near 0
+  const nextScale = Number((minScale + (maxScale - minScale) * (1 - biased)).toFixed(2))
+
+  // Rotation: snap to 90° steps like the slider.
+  const rotations = [0, 90, 180, 270]
+  const nextRot = rotations[Math.floor(Math.random() * rotations.length)]
+
+  if (randomizePatternControls.value.x) {
+    bg.x = nextX
+    patternBackground.value.x = nextX
+  }
+  if (randomizePatternControls.value.y) {
+    bg.y = nextY
+    patternBackground.value.y = nextY
+  }
+  if (randomizePatternControls.value.rotation) {
+    bg.rotation = nextRot
+    patternBackground.value.rotation = nextRot
+  }
+  if (randomizePatternControls.value.scale) {
+    // Use the dedicated helper so scale stays consistent with the pivot model.
+    updatePatternBackgroundScale(nextScale)
+  }
 }
 
 // Rotate the point (x,y) by angleDeg around origin.
@@ -2024,9 +2197,26 @@ const getExportSVGStringAsync = async () => {
       const baseY = cy - rh / 2
 
       // Apply: translate to center, then bg translation, then rotate+scale about center.
-      // We use a single group transform so the exported result matches DOM behavior.
+      // Export must match on-screen tint, so we inline+recolor the SVG markup.
       svg += `<g transform="translate(${cx} ${cy}) translate(${tx} ${ty}) rotate(${rotation}) scale(${sBg}) translate(${-rw / 2} ${-rh / 2})">\n`
-      svg += `<image href="${svgEscape(href)}" x="0" y="0" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
+
+      try {
+        const fetched = await fetchAssetDataUrl(href)
+        if (fetched && fetched.type === 'svg' && typeof fetched.text === 'string') {
+          const parts = extractSVGParts(fetched.text)
+          const tintedInner = tintSVGWithDOM(fetched.text, selectedAssetColor.value)
+          svg += `<svg x="0" y="0" width="${rw}" height="${rh}" viewBox="${parts.minX} ${parts.minY} ${parts.vbW} ${parts.vbH}" preserveAspectRatio="xMidYMid meet">\n`
+          svg += `${tintedInner}\n`
+          svg += `</svg>\n`
+        } else {
+          // Fallback: embed as image if we couldn't inline.
+          const imgHref = fetched && fetched.dataUrl ? fetched.dataUrl : href
+          svg += `<image href="${svgEscape(imgHref)}" x="0" y="0" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
+        }
+      } catch (e) {
+        svg += `<image href="${svgEscape(href)}" x="0" y="0" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
+      }
+
       svg += `</g>\n`
       continue
     }
@@ -2073,8 +2263,10 @@ const getExportSVGStringAsync = async () => {
       // Inline SVG markup and tint it by replacing fills/styles. This gives
       // more predictable color results than masking a rasterized SVG image.
       const parts = extractSVGParts(fetched.text)
-      // Tint using DOM parser to reliably replace fills/styles
-      const tintedInner = tintSVGWithDOM(fetched.text, selectedAssetColor.value)
+      // Tint using DOM parser to reliably replace fills/styles.
+      // Use the per-asset color if present; fall back to the currently selected UI color.
+      const tintColor = a && a.color ? a.color : selectedAssetColor.value
+      const tintedInner = tintSVGWithDOM(fetched.text, tintColor)
 
       // Embed the SVG inside its own <svg> element positioned at rx,ry and
       // sized to rw/rh. Use preserveAspectRatio so aspect is preserved like
@@ -2838,7 +3030,38 @@ const randomizePattern = () => {
         <p class="font-object text-xs mb-2 text-gray-500">Click to change colors, and to invert.</p>
         <div class="color-presets">
           <button
-            v-for="preset in colorPresets"
+            v-for="preset in predefinedPresets"
+            :key="preset.name"
+            class="color-button"
+            :class="{
+              selected:
+                preset.bg === selectedBackgroundColor && preset.asset === selectedAssetColor,
+            }"
+            @click="selectColorPreset(preset)"
+            :title="preset.name"
+          >
+            <div
+              class="color-swatch"
+              :style="{
+                background:
+                  'linear-gradient(90deg, ' + preset.bg + ' 50%, ' + preset.asset + ' 50%)',
+              }"
+            ></div>
+          </button>
+          <button
+            class="invert-button"
+            :disabled="!canInvertColors"
+            :class="{ disabled: !canInvertColors }"
+            @click="invertColors"
+            title="Swap background and asset color"
+          >
+            ↔
+          </button>
+        </div>
+
+        <div v-if="customPresets.length" class="color-presets color-presets--custom">
+          <button
+            v-for="preset in customPresets"
             :key="preset.name"
             class="color-button"
             :class="{
@@ -2857,7 +3080,6 @@ const randomizePattern = () => {
             ></div>
 
             <button
-              v-if="preset.isCustom"
               type="button"
               class="custom-swatch-remove"
               @click.stop="removeCustomSwatch(preset)"
@@ -2865,15 +3087,6 @@ const randomizePattern = () => {
             >
               ×
             </button>
-          </button>
-          <button
-            class="invert-button"
-            :disabled="!canInvertColors"
-            :class="{ disabled: !canInvertColors }"
-            @click="invertColors"
-            title="Swap background and asset color"
-          >
-            ↔
           </button>
         </div>
 
@@ -2994,7 +3207,59 @@ const randomizePattern = () => {
             + Upload SVG
           </button>
 
-          <h2 class="font-object font-medium text-base mt-10">Background controls</h2>
+          <h2 class="font-object font-medium text-base mt-10">Controls</h2>
+
+          <button
+            class="savebutton ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-3"
+            @click.prevent="randomizePatternBackgroundPosition"
+          >
+            Random
+          </button>
+
+          <div class="flex gap-2 w-[95%] mt-2">
+            <button
+              type="button"
+              @click.prevent="randomizePatternControls.scale = !randomizePatternControls.scale"
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer flex-1',
+                { active: randomizePatternControls.scale },
+              ]"
+            >
+              Scale
+            </button>
+            <button
+              type="button"
+              @click.prevent="randomizePatternControls.x = !randomizePatternControls.x"
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer flex-1',
+                { active: randomizePatternControls.x },
+              ]"
+            >
+              X
+            </button>
+            <button
+              type="button"
+              @click.prevent="randomizePatternControls.y = !randomizePatternControls.y"
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer flex-1',
+                { active: randomizePatternControls.y },
+              ]"
+            >
+              Y
+            </button>
+            <button
+              type="button"
+              @click.prevent="
+                randomizePatternControls.rotation = !randomizePatternControls.rotation
+              "
+              :class="[
+                'sizebutton px-2 border-2 cursor-pointer flex-1',
+                { active: randomizePatternControls.rotation },
+              ]"
+            >
+              Rot
+            </button>
+          </div>
 
           <div class="mt-3">
             <div class="font-object text-xs mb-1 text-gray-700">
@@ -3307,7 +3572,7 @@ const randomizePattern = () => {
                 top: asset.y + 'px',
                 width: getAssetPixelSize(asset) + 'px',
                 height: getAssetPixelSize(asset) + 'px',
-                background: selectedAssetColor,
+                background: asset.color || selectedAssetColor,
                 WebkitMaskImage: `url(${asset.path})`,
                 maskImage: `url(${asset.path})`,
                 WebkitMaskSize: 'contain',
