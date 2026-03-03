@@ -201,10 +201,29 @@ const openUploadSvgPicker = () => {
 // and is clipped by the viewport.
 const patternBackground = ref({
   scale: 1,
+  // Position stored in *world units* (pre-scale), so changing scale never
+  // shifts the apparent center pivot.
   x: 0,
   y: 0,
   rotation: 0,
 })
+
+// Pattern finder: convert between world-units (stored) and screen pixels (rendered).
+const patternWorldToScreen = (world, scale) => {
+  const s = Number(scale || 1) || 1
+  return {
+    x: (Number(world?.x || 0) || 0) * s,
+    y: (Number(world?.y || 0) || 0) * s,
+  }
+}
+
+const patternScreenToWorld = (screen, scale) => {
+  const s = Number(scale || 1) || 1
+  return {
+    x: (Number(screen?.x || 0) || 0) / s,
+    y: (Number(screen?.y || 0) || 0) / s,
+  }
+}
 
 // Visible canvas viewport center (in CSS pixels). Used as a stable pivot
 // for Pattern finder background transforms.
@@ -702,23 +721,10 @@ const updatePatternBackgroundScale = (newScale) => {
   const nextScale = Number(newScale || 1) || 1
   if (!Number.isFinite(prevScale) || !Number.isFinite(nextScale) || prevScale === nextScale) return
 
-  // Keep the visual pivot fixed by shifting translation when scale changes.
-  // Model: element is centered at canvas center with translation (x,y).
-  // Scaling around element center would move a local point: delta = local * (s2 - s1).
-  // We compensate by adjusting translation by -rotate(local*(s2-s1), rotation).
-  const rot = Number(bg.rotation || 0)
-  const local = patternGrab.value
-    ? { x: Number(patternGrab.value.localX || 0), y: Number(patternGrab.value.localY || 0) }
-    : { x: 0, y: 0 }
-
-  const diff = {
-    x: local.x * (nextScale - prevScale),
-    y: local.y * (nextScale - prevScale),
-  }
-  const screen = rotatePoint(diff.x, diff.y, rot)
-
-  const nextX = Math.round((Number(bg.x || 0) || 0) - screen.x)
-  const nextY = Math.round((Number(bg.y || 0) || 0) - screen.y)
+  // With world-units storage, scaling shouldn't change the stored position.
+  // We only update the scale and then re-derive screen pixels in the render.
+  const nextX = Number(bg.x || 0) || 0
+  const nextY = Number(bg.y || 0) || 0
 
   bg.scale = nextScale
   bg.x = nextX
@@ -726,6 +732,7 @@ const updatePatternBackgroundScale = (newScale) => {
 
   // keep UI model in sync
   patternBackground.value.scale = nextScale
+  // bg.x/bg.y are world units
   patternBackground.value.x = nextX
   patternBackground.value.y = nextY
 }
@@ -796,12 +803,17 @@ const startMovingAsset = (asset, event, el = null) => {
       const ptrX = event.clientX - canvasRect.left
       const ptrY = event.clientY - canvasRect.top
 
-      // Current translation offsets (center-offset space)
-      const tx = asset.x || 0
-      const ty = asset.y || 0
+      // Current translation offsets are stored in WORLD units
+      const txWorld = Number(asset.x || 0) || 0
+      const tyWorld = Number(asset.y || 0) || 0
 
       const rot = Number(asset.rotation || 0)
       const scale = Number(asset.scale || 1) || 1
+
+      // Convert stored world pos -> screen px for pointer math
+      const tScreen = patternWorldToScreen({ x: txWorld, y: tyWorld }, scale)
+      const tx = tScreen.x
+      const ty = tScreen.y
 
       // Compute pointer position relative to the SVG's *current* center.
       // SVG center is always canvas center + translation.
@@ -818,8 +830,9 @@ const startMovingAsset = (asset, event, el = null) => {
         // Stored in local object space
         localX,
         localY,
-        startX: tx,
-        startY: ty,
+        // Store drag start in WORLD units so we can round-trip cleanly.
+        startX: txWorld,
+        startY: tyWorld,
         startScale: scale,
         startRotation: rot,
       }
@@ -845,9 +858,11 @@ const startMovingAsset = (asset, event, el = null) => {
       const rect = canvasRect
       const w = asset.renderW
       const h = asset.renderH
+      const scale = Number(asset.scale || 1) || 1
+      const tScreen = patternWorldToScreen({ x: asset.x || 0, y: asset.y || 0 }, scale)
       // With the 50%/50% anchor model the visual top-left is center - half size + offsets
-      const left = rect.width / 2 - w / 2 + (asset.x || 0)
-      const top = rect.height / 2 - h / 2 + (asset.y || 0)
+      const left = rect.width / 2 - w / 2 + (tScreen.x || 0)
+      const top = rect.height / 2 - h / 2 + (tScreen.y || 0)
       dragOffset.value = { x: mouseX - left, y: mouseY - top }
       draggedElement.value = el
     } else if (el && el.getBoundingClientRect) {
@@ -1004,7 +1019,7 @@ const onCanvasMouseMove = (event) => {
     const ptrY = event.clientY - canvasRect.top
 
     // Keep the originally grabbed point under the cursor.
-    // Translation = pointer - canvasCenter - grabbedOffset.
+    // Translation is computed in SCREEN px first, then converted back to WORLD.
     let displayX = ptrX - canvasRect.width / 2
     let displayY = ptrY - canvasRect.height / 2
 
@@ -1024,10 +1039,15 @@ const onCanvasMouseMove = (event) => {
     displayX = Math.round(displayX)
     displayY = Math.round(displayY)
 
-    draggedPlacedAsset.value.x = displayX
-    draggedPlacedAsset.value.y = displayY
-    patternBackground.value.x = displayX
-    patternBackground.value.y = displayY
+    const scale = Number(draggedPlacedAsset.value.scale || 1) || 1
+    const world = patternScreenToWorld({ x: displayX, y: displayY }, scale)
+    const worldX = world.x
+    const worldY = world.y
+
+    draggedPlacedAsset.value.x = worldX
+    draggedPlacedAsset.value.y = worldY
+    patternBackground.value.x = worldX
+    patternBackground.value.y = worldY
 
     // still allow trash hover feedback
     if (trashRef.value) {
@@ -2747,15 +2767,19 @@ const randomizePattern = () => {
             </div>
             <input
               type="range"
-              min="-180"
-              max="180"
-              step="1"
+              min="0"
+              max="270"
+              step="90"
               v-model.number="patternBackground.rotation"
               class="slider w-[95%]"
               @input="
                 () => {
                   const bg = backgroundImages[0]
-                  if (bg && bg.renderW && bg.renderH) bg.rotation = patternBackground.rotation
+                  // Snap to 90° steps
+                  const snapped =
+                    (((Math.round((patternBackground.rotation || 0) / 90) * 90) % 360) + 360) % 360
+                  patternBackground.rotation = snapped
+                  if (bg && bg.renderW && bg.renderH) bg.rotation = snapped
                 }
               "
             />
@@ -2887,7 +2911,7 @@ const randomizePattern = () => {
               <!-- Pattern finder background SVG: render as a tinted mask so it's always visible -->
               <div
                 v-if="img.renderW && img.renderH && (img.dataUrl || img.path)"
-                class="placed-asset-shape pattern-bg-shape"
+                class="placed-asset-shape pattern-bg-wrapper"
                 draggable="false"
                 :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
                 :data-id="img.id"
@@ -2897,22 +2921,33 @@ const randomizePattern = () => {
                   top: canvasCenterCss.top,
                   width: img.renderW + 'px',
                   height: img.renderH + 'px',
-                  background: selectedAssetColor,
-                  WebkitMaskImage: `url(${img.dataUrl || img.path})`,
-                  maskImage: `url(${img.dataUrl || img.path})`,
-                  WebkitMaskSize: 'contain',
-                  maskSize: 'contain',
-                  WebkitMaskRepeat: 'no-repeat',
-                  maskRepeat: 'no-repeat',
-                  WebkitMaskPosition: 'center',
-                  maskPosition: 'center',
-                  // Keep pivot locked to the visible canvas center.
-                  // x/y are translation offsets from that center.
-                  transform: `translate(-50%, -50%) translate(${img.x || 0}px, ${img.y || 0}px) rotate(${img.rotation || 0}deg) scale(${img.scale || 1})`,
+                  // Wrapper is centered on the visible canvas.
+                  // x/y are pure translation offsets from that center.
+                  transform: `translate(-50%, -50%) translate(${(img.x || 0) * (img.scale || 1)}px, ${(img.y || 0) * (img.scale || 1)}px)`,
                   transformOrigin: 'center center',
                   opacity: 1,
                 }"
-              />
+              >
+                <div
+                  class="pattern-bg-shape"
+                  :style="{
+                    width: '100%',
+                    height: '100%',
+                    background: selectedAssetColor,
+                    WebkitMaskImage: `url(${img.dataUrl || img.path})`,
+                    maskImage: `url(${img.dataUrl || img.path})`,
+                    WebkitMaskSize: 'contain',
+                    maskSize: 'contain',
+                    WebkitMaskRepeat: 'no-repeat',
+                    maskRepeat: 'no-repeat',
+                    WebkitMaskPosition: 'center',
+                    maskPosition: 'center',
+                    // Inner node rotates/scales around its own center.
+                    transform: `rotate(${img.rotation || 0}deg) scale(${img.scale || 1})`,
+                    transformOrigin: 'center center',
+                  }"
+                />
+              </div>
 
               <!-- Normal uploaded images: render as images (existing behavior) -->
               <img

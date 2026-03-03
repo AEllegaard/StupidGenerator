@@ -323,6 +323,12 @@ body {
    Ensure scaling/rotation always pivot around the element center.
    (Some browsers can behave oddly with inline transformOrigin in combination
    with translate(-50%, -50%) + masks unless we also set it in CSS.) */
+.pattern-bg-wrapper {
+  /* wrapper is positioned absolutely via .placed-asset-shape */
+  transform-origin: center center;
+  will-change: transform;
+}
+
 .pattern-bg-shape {
   transform-origin: center center;
   will-change: transform;
