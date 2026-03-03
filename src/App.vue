@@ -1505,53 +1505,113 @@ const getAssetPixelSize = (asset) => {
 
 // Watch for grid / canvas dimension changes and remove placed assets that
 // no longer fit in the new grid (e.g. when scaling reduces columns/rows).
+const _gridResizeRaf = { id: 0 }
 watch(
   () => [
     gridColumns.value,
+    gridRows.value,
     gridSize.value,
     currentCanvasPreset.value.width,
     currentCanvasPreset.value.height,
   ],
-  () => {
+  (next, prev) => {
+    // Only relevant in Sandbox; Pattern finder uses a different coordinate model.
+    if (editorMode.value !== 'sandbox') return
+    if (!canvasRef.value) return
+
+    // Debounce to the next animation frame so we don't apply intermediate states
+    // while the range input is being dragged.
     try {
-      if (!canvasRef.value) return
-      const canvasRect = canvasRef.value.getBoundingClientRect()
-      const canvasWidth = canvasRect.width
-      const canvasHeight = canvasRect.height
-      const cols = gridColumns.value
-      const cellW = canvasWidth / Math.max(1, cols)
-      const cellH = cellW
-      const rows = Math.max(2, Math.floor(canvasHeight / cellH))
+      if (_gridResizeRaf.id) cancelAnimationFrame(_gridResizeRaf.id)
+    } catch (e) {}
 
-      const pruneList = (list) =>
-        list.filter((asset) => {
-          const w = getAssetPixelSize(asset)
-          const h = w
-          const left = asset.x
-          const top = asset.y
-          const startCol = Math.floor(left / cellW)
-          const endCol = Math.floor((left + w - 1) / cellW)
-          const startRow = Math.floor(top / cellH)
-          const endRow = Math.floor((top + h - 1) / cellH)
+    _gridResizeRaf.id = requestAnimationFrame(() => {
+      _gridResizeRaf.id = 0
+      try {
+        if (!canvasRef.value) return
+        const canvasRect = canvasRef.value.getBoundingClientRect()
+        const canvasWidth = canvasRect.width
+        const canvasHeight = canvasRect.height
 
-          // If asset occupies any cell outside the new grid, drop it.
-          if (startCol < 0 || endCol >= cols || startRow < 0 || endRow >= rows) return false
-          return true
-        })
+        const colsNow = gridColumns.value
+        const rowsNow = gridRows.value
+        const cellWNow = canvasWidth / Math.max(1, colsNow)
+        const cellHNow = canvasHeight / Math.max(1, rowsNow)
 
-      const beforeCount = placedAssets.value.length
-      const kept = pruneList(placedAssets.value)
-      const beforeBgCount = backgroundImages.value.length
-      const keptBg = pruneList(backgroundImages.value)
+        // Previous grid (fallback to current if unavailable)
+        const prevCols = Array.isArray(prev) ? Number(prev[0]) || colsNow : colsNow
+        const prevRows = Array.isArray(prev) ? Number(prev[1]) || rowsNow : rowsNow
+        const cellWPrev = canvasWidth / Math.max(1, prevCols)
+        const cellHPrev = canvasHeight / Math.max(1, prevRows)
 
-      if (kept.length !== beforeCount || keptBg.length !== beforeBgCount) {
-        pushHistory()
-        placedAssets.value = kept
-        backgroundImages.value = keptBg
+        // Mutate positions in-place (preserves object identity).
+        const repositionInPlace = (list) => {
+          let moved = false
+          for (const asset of list || []) {
+            if (!asset) continue
+            // Skip special Pattern finder background if it ever exists here
+            if (asset.renderW && asset.renderH) continue
+
+            const mult = asset.multiplier || 1
+            const sizePrev = Math.round(cellWPrev * mult)
+
+            // Determine which cell the asset belongs to based on its CENTER.
+            const centerXPrev = (Number(asset.x || 0) || 0) + sizePrev / 2
+            const centerYPrev = (Number(asset.y || 0) || 0) + sizePrev / 2
+
+            const col = Math.max(0, Math.min(prevCols - 1, Math.floor(centerXPrev / cellWPrev)))
+            const row = Math.max(0, Math.min(prevRows - 1, Math.floor(centerYPrev / cellHPrev)))
+
+            const sizeNow = Math.round(cellWNow * mult)
+
+            // New anchor in the new grid
+            const anchorX = mult > 1 ? col * cellWNow : (col + 0.5) * cellWNow
+            const anchorY = mult > 1 ? row * cellHNow : (row + 0.5) * cellHNow
+
+            const nextX = Math.round(mult > 1 ? anchorX : anchorX - sizeNow / 2)
+            const nextY = Math.round(mult > 1 ? anchorY : anchorY - sizeNow / 2)
+
+            if (asset.x !== nextX || asset.y !== nextY) {
+              asset.x = nextX
+              asset.y = nextY
+              moved = true
+            }
+          }
+          return moved
+        }
+
+        const isInsideGrid = (asset) => {
+          if (!asset) return false
+          if (asset.renderW && asset.renderH) return true
+          const mult = asset.multiplier || 1
+          const w = Math.round(cellWNow * mult)
+          const h = Math.round(cellHNow * mult)
+          const left = Number(asset.x || 0) || 0
+          const top = Number(asset.y || 0) || 0
+          return left >= 0 && top >= 0 && left + w <= canvasWidth && top + h <= canvasHeight
+        }
+
+        const beforePlaced = placedAssets.value.length
+        const beforeBg = backgroundImages.value.length
+
+        const movedPlaced = repositionInPlace(placedAssets.value)
+        const movedBg = repositionInPlace(backgroundImages.value)
+
+        const prunedPlaced = (placedAssets.value || []).filter(isInsideGrid)
+        const prunedBg = (backgroundImages.value || []).filter(isInsideGrid)
+
+        const removed = prunedPlaced.length !== beforePlaced || prunedBg.length !== beforeBg
+
+        // Only commit if something truly changed.
+        if (movedPlaced || movedBg || removed) {
+          pushHistory()
+          placedAssets.value = prunedPlaced
+          backgroundImages.value = prunedBg
+        }
+      } catch (e) {
+        console.warn('error repositioning assets after grid change', e)
       }
-    } catch (e) {
-      console.warn('error pruning placed assets after grid change', e)
-    }
+    })
   },
 )
 
@@ -1764,7 +1824,47 @@ const getExportSVGStringAsync = async () => {
   )}"/>\n`
 
   // Background images (uploaded) are rendered first so they sit under assets.
+  // NOTE: Pattern finder background SVG is stored in backgroundImages too, but
+  // it uses a different coordinate model (center anchored + scale).
   for (const a of backgroundImages.value) {
+    const href = a.dataUrl || a.path
+    if (!href) continue
+
+    // Pattern finder big uploaded SVG background
+    if (a.renderW && a.renderH) {
+      const renderW = Number(a.renderW) || 0
+      const renderH = Number(a.renderH) || 0
+      const sBg = Number(a.scale || 1) || 1
+      const rotation = Number(a.rotation || 0) || 0
+
+      // bg.x/bg.y are WORLD units; on screen we translate by (x*scale, y*scale)
+      const screenTx = (Number(a.x || 0) || 0) * sBg
+      const screenTy = (Number(a.y || 0) || 0) * sBg
+
+      // Convert screen px -> export px
+      const tx = screenTx * scale
+      const ty = screenTy * scale
+
+      const rw = renderW * scale
+      const rh = renderH * scale
+
+      // Canvas center in export coords
+      const cx = exportW / 2
+      const cy = exportH / 2
+
+      // Top-left if the image was centered at canvas center
+      const baseX = cx - rw / 2
+      const baseY = cy - rh / 2
+
+      // Apply: translate to center, then bg translation, then rotate+scale about center.
+      // We use a single group transform so the exported result matches DOM behavior.
+      svg += `<g transform="translate(${cx} ${cy}) translate(${tx} ${ty}) rotate(${rotation}) scale(${sBg}) translate(${-rw / 2} ${-rh / 2})">\n`
+      svg += `<image href="${svgEscape(href)}" x="0" y="0" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
+      svg += `</g>\n`
+      continue
+    }
+
+    // Normal uploaded images: top-left anchored squares
     const rx = (a.x || 0) * scale
     const ry = (a.y || 0) * scale
     const rw = getAssetPixelSize(a) * scale
@@ -1772,7 +1872,6 @@ const getExportSVGStringAsync = async () => {
     const rotation = a.rotation || 0
     const cx = rx + rw / 2
     const cy = ry + rh / 2
-    const href = a.dataUrl || a.path
     svg += `<g transform="rotate(${rotation} ${cx} ${cy})">\n`
     svg += `<image href="${svgEscape(href)}" x="${rx}" y="${ry}" width="${rw}" height="${rh}" preserveAspectRatio="xMidYMid meet" />\n`
     svg += `</g>\n`
