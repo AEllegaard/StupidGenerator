@@ -119,6 +119,13 @@ body {
   appearance: none;
   /* Ensure the chevron stays visible even if other button styles apply */
   background-color: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 4px 8px;
+  padding-right: 30px; /* room for the chevron */
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
   /* Draw a chevron using CSS gradients so we don't need an asset */
   background-image:
     linear-gradient(45deg, transparent 50%, rgba(17, 24, 39, 0.9) 50%),
@@ -130,12 +137,60 @@ body {
     6px 6px,
     6px 6px;
   background-repeat: no-repeat;
-  padding-right: 30px; /* room for the chevron */
 }
 
 /* Keep the chevron on hover (don't overwrite background-image) */
 .select:hover {
   background-color: rgba(0, 0, 0, 0.04);
+}
+
+/* Canvas preset custom dropdown */
+.preset-dropdown {
+  position: relative;
+}
+
+.preset-dropdown__button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+}
+
+.preset-dropdown__menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  width: 100%;
+  max-height: 240px;
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+  z-index: 1000;
+}
+
+.preset-dropdown__option {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.preset-dropdown__option:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.preset-dropdown__option.selected,
+.preset-dropdown__option.selected:hover {
+  background: rgba(17, 24, 39, 0.08);
 }
 
 .select:focus-visible {

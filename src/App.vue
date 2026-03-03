@@ -317,6 +317,26 @@ const generatorAssets = computed(() => {
 // (no disable/enable feature) All assets can be used by the generator.
 
 const currentCanvasPreset = ref(canvasDimensions[0])
+
+// --- Canvas preset dropdown (custom, always opens downward) ---------
+const presetDropdownOpen = ref(false)
+const presetDropdownRef = ref(null)
+
+const closePresetDropdown = () => {
+  presetDropdownOpen.value = false
+}
+
+const togglePresetDropdown = () => {
+  presetDropdownOpen.value = !presetDropdownOpen.value
+}
+
+const onSelectCanvasPresetName = (name) => {
+  const selectedPreset = canvasDimensions.find((preset) => preset.name === name)
+  if (!selectedPreset) return
+  pushHistory()
+  currentCanvasPreset.value = selectedPreset
+  closePresetDropdown()
+}
 const gridSize = ref(5)
 const placedAssets = ref([]) // Array to store placed assets on canvas
 // Uploaded images placed on the canvas should always sit UNDER the SVG assets.
@@ -616,6 +636,9 @@ const onKeyDown = (e) => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
+  // Custom preset dropdown: close on outside click / Escape
+  window.addEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
+  window.addEventListener('keydown', onDocKeyDownForPreset)
 
   // Load any user-defined color swatches.
   loadCustomSwatches()
@@ -658,6 +681,13 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
+  try {
+    window.removeEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
+  } catch (e) {
+    // Safari requires the same signature; fall back
+    window.removeEventListener('pointerdown', onDocPointerDownForPreset, true)
+  }
+  window.removeEventListener('keydown', onDocKeyDownForPreset)
   // Best-effort save on exit
   try {
     saveAutosaveNow()
@@ -2403,6 +2433,28 @@ const exportAsPDF = async () => {
   }
 }
 
+// Close preset dropdown on outside click / Escape
+const onDocPointerDownForPreset = (e) => {
+  try {
+    if (!presetDropdownOpen.value) return
+    const root = presetDropdownRef.value
+    if (!root) return
+    const t = e?.target
+    if (t && root.contains && root.contains(t)) return
+    closePresetDropdown()
+  } catch (err) {
+    closePresetDropdown()
+  }
+}
+
+const onDocKeyDownForPreset = (e) => {
+  if (!presetDropdownOpen.value) return
+  if (e && (e.key === 'Escape' || e.key === 'Esc')) {
+    e.preventDefault()
+    closePresetDropdown()
+  }
+}
+
 // --- Uploaded images (user-provided raster assets) ---------------------
 const uploadedImages = ref([]) // [{ name, dataUrl, isUploaded }]
 const uploadInputRef = ref(null)
@@ -2448,14 +2500,6 @@ const onAssetClick = (asset, event) => {
 
   // Otherwise perform rotation
   rotateAsset(asset)
-}
-
-const handlePresetChange = (event) => {
-  const selectedPreset = canvasDimensions.find((preset) => preset.name === event.target.value)
-  if (selectedPreset) {
-    pushHistory()
-    currentCanvasPreset.value = selectedPreset
-  }
 }
 
 // (Generator type UI removed)
@@ -3008,15 +3052,33 @@ const randomizePattern = () => {
 
       <div class="ml-3 mt-8">
         <div class="font-object font-medium text-base">Canvas presets</div>
-        <select
-          @change="handlePresetChange"
-          :value="currentCanvasPreset.name"
-          class="select font-object font-regular p-1 border-2 w-[95%] rounded cursor-pointer btn btn--sm"
-        >
-          <option v-for="preset in canvasDimensions" :key="preset.name" :value="preset.name">
-            {{ preset.name }} ({{ preset.width }} x {{ preset.height }}px)
-          </option>
-        </select>
+        <div ref="presetDropdownRef" class="preset-dropdown w-[95%]">
+          <button
+            type="button"
+            class="select preset-dropdown__button font-object font-regular cursor-pointer"
+            :aria-expanded="presetDropdownOpen ? 'true' : 'false'"
+            aria-haspopup="listbox"
+            @click.prevent="togglePresetDropdown"
+          >
+            {{ currentCanvasPreset.name }} ({{ currentCanvasPreset.width }} x
+            {{ currentCanvasPreset.height }}px)
+          </button>
+
+          <div v-if="presetDropdownOpen" class="preset-dropdown__menu" role="listbox">
+            <button
+              v-for="preset in canvasDimensions"
+              :key="preset.name"
+              type="button"
+              class="preset-dropdown__option"
+              :class="{ selected: preset.name === currentCanvasPreset.name }"
+              role="option"
+              :aria-selected="preset.name === currentCanvasPreset.name ? 'true' : 'false'"
+              @click.prevent="onSelectCanvasPresetName(preset.name)"
+            >
+              {{ preset.name }} ({{ preset.width }} x {{ preset.height }}px)
+            </button>
+          </div>
+        </div>
 
         <div v-if="editorMode === 'sandbox'">
           <h2 class="font-object font-medium text-base mt-8">Grid size</h2>
@@ -3194,7 +3256,6 @@ const randomizePattern = () => {
               </button>
             </div>
           </div>
-
         </div>
 
         <!-- Pattern finder-only UI -->
@@ -3209,7 +3270,9 @@ const randomizePattern = () => {
           </button>
 
           <h2 class="font-object font-medium text-base mt-10">Controls</h2>
-          <p class="font-object text-xs mb-2 text-gray-500">Enable/disable pattern randomization options.</p>
+          <p class="font-object text-xs mb-2 text-gray-500">
+            Enable/disable pattern randomization options.
+          </p>
 
           <button
             class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
