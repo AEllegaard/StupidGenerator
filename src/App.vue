@@ -3224,6 +3224,7 @@ const randomizePattern = () => {
                 'sizebutton px-2 border-2 cursor-pointer flex-1',
                 { active: randomizePatternControls.scale },
               ]"
+              :style="{ opacity: randomizePatternControls.scale ? 1 : 0.35 }"
             >
               Scale
             </button>
@@ -3234,6 +3235,7 @@ const randomizePattern = () => {
                 'sizebutton px-2 border-2 cursor-pointer flex-1',
                 { active: randomizePatternControls.x },
               ]"
+              :style="{ opacity: randomizePatternControls.x ? 1 : 0.35 }"
             >
               X
             </button>
@@ -3244,6 +3246,7 @@ const randomizePattern = () => {
                 'sizebutton px-2 border-2 cursor-pointer flex-1',
                 { active: randomizePatternControls.y },
               ]"
+              :style="{ opacity: randomizePatternControls.y ? 1 : 0.35 }"
             >
               Y
             </button>
@@ -3256,6 +3259,7 @@ const randomizePattern = () => {
                 'sizebutton px-2 border-2 cursor-pointer flex-1',
                 { active: randomizePatternControls.rotation },
               ]"
+              :style="{ opacity: randomizePatternControls.rotation ? 1 : 0.35 }"
             >
               Rot
             </button>
