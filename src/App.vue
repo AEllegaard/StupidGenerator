@@ -348,15 +348,79 @@ const canvasStyle = computed(() => {
 })
 
 // Color presets for canvas background and asset tint
-const colorPresets = [
+const DEFAULT_COLOR_PRESETS = [
   { name: 'Red / Rosa', bg: '#f0604d', asset: '#ff9698' },
   { name: 'Dark green / ultra violet', bg: '#164230', asset: '#322fb0' },
   { name: 'Ultra Violet / Blue', bg: '#4055b2', asset: '#322fb0' },
   { name: 'Dark green / Blue', bg: '#164230', asset: '#4055b2' },
 ]
 
-const selectedBackgroundColor = ref(colorPresets[0].bg)
-const selectedAssetColor = ref(colorPresets[0].asset)
+const CUSTOM_SWATCHES_KEY = 'stupidgenerator_custom_swatches_v1'
+const colorPresets = ref([...DEFAULT_COLOR_PRESETS])
+
+const loadCustomSwatches = () => {
+  try {
+    const raw = localStorage.getItem(CUSTOM_SWATCHES_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return
+    const cleaned = parsed
+      .filter((x) => x && typeof x.bg === 'string' && typeof x.asset === 'string')
+      .map((x, i) => ({
+        name: String(x.name || `Custom ${i + 1}`),
+        bg: String(x.bg),
+        asset: String(x.asset),
+        isCustom: true,
+      }))
+    if (cleaned.length) colorPresets.value = [...DEFAULT_COLOR_PRESETS, ...cleaned]
+  } catch (e) {
+    // ignore
+  }
+}
+
+const persistCustomSwatches = () => {
+  try {
+    const custom = (colorPresets.value || []).filter((p) => p && p.isCustom)
+    localStorage.setItem(CUSTOM_SWATCHES_KEY, JSON.stringify(custom))
+  } catch (e) {
+    // ignore
+  }
+}
+
+const selectedBackgroundColor = ref(colorPresets.value[0].bg)
+const selectedAssetColor = ref(colorPresets.value[0].asset)
+
+const canInvertColors = computed(() => (colorPresets.value || []).length >= 2)
+
+const formatColor = (v) => {
+  const s = String(v || '').trim()
+  if (!s) return null
+  // Simple hex guard (we only allow hex from the UI pickers anyway)
+  if (!/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s)) return null
+  return s
+}
+
+const addCustomSwatch = () => {
+  const bg = formatColor(selectedBackgroundColor.value)
+  const asset = formatColor(selectedAssetColor.value)
+  if (!bg || !asset) return
+
+  const customCount = (colorPresets.value || []).filter((p) => p && p.isCustom).length
+  const name = `Custom ${customCount + 1}`
+
+  pushHistory()
+  colorPresets.value.push({ name, bg, asset, isCustom: true })
+  persistCustomSwatches()
+}
+
+const removeCustomSwatch = (preset) => {
+  if (!preset || !preset.isCustom) return
+  const idx = (colorPresets.value || []).indexOf(preset)
+  if (idx === -1) return
+  pushHistory()
+  colorPresets.value.splice(idx, 1)
+  persistCustomSwatches()
+}
 
 const selectColorPreset = (preset) => {
   pushHistory()
@@ -366,6 +430,7 @@ const selectColorPreset = (preset) => {
 
 // Swap background and asset colors
 const invertColors = () => {
+  if (!canInvertColors.value) return
   pushHistory()
   const bg = selectedBackgroundColor.value
   const asset = selectedAssetColor.value
@@ -463,6 +528,9 @@ const onKeyDown = (e) => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
+
+  // Load any user-defined color swatches.
+  loadCustomSwatches()
 
   // Evaluate mobile/tablet warning on startup and on resize/orientation changes.
   updateDeviceWarningVisibility()
@@ -2787,13 +2855,41 @@ const randomizePattern = () => {
                   'linear-gradient(90deg, ' + preset.bg + ' 50%, ' + preset.asset + ' 50%)',
               }"
             ></div>
+
+            <button
+              v-if="preset.isCustom"
+              type="button"
+              class="custom-swatch-remove"
+              @click.stop="removeCustomSwatch(preset)"
+              title="Remove swatch"
+            >
+              ×
+            </button>
           </button>
           <button
             class="invert-button"
+            :disabled="!canInvertColors"
+            :class="{ disabled: !canInvertColors }"
             @click="invertColors"
             title="Swap background and asset color"
           >
             ↔
+          </button>
+        </div>
+
+        <div class="custom-swatch-controls">
+          <div class="custom-swatch-row">
+            <label class="custom-swatch-label font-object">BG</label>
+            <input type="color" v-model="selectedBackgroundColor" class="custom-swatch-input" />
+            <label class="custom-swatch-label font-object">Asset</label>
+            <input type="color" v-model="selectedAssetColor" class="custom-swatch-input" />
+          </div>
+          <button
+            type="button"
+            class="savebutton custom-swatch-add font-object font-regular p-1 border-2 rounded cursor-pointer"
+            @click="addCustomSwatch"
+          >
+            + Add swatch
           </button>
         </div>
 

@@ -318,6 +318,12 @@ body {
   cursor: pointer;
 }
 
+.invert-button.disabled,
+.invert-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .invert-button:hover {
   background-color: rgba(0, 0, 0, 0.12);
 }
@@ -327,6 +333,65 @@ body {
   height: 100%;
   border-radius: 4px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) inset;
+}
+
+.custom-swatch-controls {
+  width: 95%;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.custom-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-swatch-label {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.custom-swatch-input {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+}
+
+.custom-swatch-add {
+  width: 100%;
+}
+
+.color-button {
+  position: relative;
+}
+
+.custom-swatch-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: white;
+  color: #111;
+  font-size: 14px;
+  line-height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.custom-swatch-remove:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .asset-button:hover {
