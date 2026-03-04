@@ -1621,6 +1621,35 @@ const onCanvasPointerDown = (event) => {
 const onCanvasMouseMove = (event) => {
   if (!draggedPlacedAsset.value || !canvasRef.value) return
 
+  // Sandbox: allow moving uploaded/background images only while Alt/Option is held.
+  // These images live in `backgroundImages` and use simple top/left positioning.
+  if (editorMode.value !== 'pattern' && draggedPlacedAsset.value.isUploaded) {
+    if (!isAltDown(event)) return
+    draggedDuringInteraction.value = true
+
+    const canvasRect = canvasRef.value.getBoundingClientRect()
+    const mouseX = event.clientX - canvasRect.left
+    const mouseY = event.clientY - canvasRect.top
+
+    const renderW = Math.round(draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value))
+    const renderH = Math.round(draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value))
+
+    let nextX = Math.round(mouseX - (dragOffset.value.x || 0))
+    let nextY = Math.round(mouseY - (dragOffset.value.y || 0))
+
+    // Keep at least 1px visible inside the canvas.
+    const minX = -Math.floor(renderW) + 1
+    const minY = -Math.floor(renderH) + 1
+    const maxX = Math.max(1, canvasRect.width - 1)
+    const maxY = Math.max(1, canvasRect.height - 1)
+    nextX = Math.max(minX, Math.min(nextX, maxX))
+    nextY = Math.max(minY, Math.min(nextY, maxY))
+
+    draggedPlacedAsset.value.x = nextX
+    draggedPlacedAsset.value.y = nextY
+    return
+  }
+
   // Pattern finder raster image background: move freely (no grid snapping),
   // only when Alt/Option is held down (enforced by pointerdown guard).
   if (editorMode.value === 'pattern' && patternImageBackground.value === draggedPlacedAsset.value) {
