@@ -736,6 +736,24 @@ const restoreAutosave = () => {
   }
 }
 
+// On reload, Sandbox should start fresh (empty canvas), but we keep:
+// - color swatches (handled by loadCustomSwatches)
+// - uploads (palette) so assets/images the user added are still available
+// Pattern mode can still restore its working state.
+const resetSandboxForReload = () => {
+  try {
+    placedAssets.value = []
+    backgroundImages.value = []
+    draggedAsset.value = null
+    draggedPlacedAsset.value = null
+    trashVisible.value = false
+    draggedOverTrash.value = false
+    lastSnap.value = { x: 0, y: 0 }
+  } catch (e) {
+    // ignore
+  }
+}
+
 // key handler for Ctrl+Z / Cmd+Z
 const onKeyDown = (e) => {
   const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
@@ -760,6 +778,14 @@ onMounted(async () => {
 
   // Restore last session (if any) before we do any initial randomization.
   const restored = restoreAutosave()
+
+  // If we restored into Sandbox, wipe the canvas contents so Sandbox always
+  // starts clean on reload (except color swatches + uploaded palette).
+  try {
+    if (editorMode.value === 'sandbox') resetSandboxForReload()
+  } catch (e) {
+    // ignore
+  }
 
   // Evaluate mobile/tablet warning on startup and on resize/orientation changes.
   updateDeviceWarningVisibility()
