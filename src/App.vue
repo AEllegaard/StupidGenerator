@@ -786,7 +786,15 @@ const restoreAutosave = () => {
 const resetSandboxForReload = () => {
   try {
     placedAssets.value = []
-    backgroundImages.value = []
+    // Keep Pattern finder background(s) if they exist, but remove sandbox-uploaded
+    // raster images from the canvas.
+    backgroundImages.value = (backgroundImages.value || []).filter((img) => {
+      if (!img) return false
+      // Pattern background SVG has renderW/renderH (and is not marked isUploaded)
+      // Sandbox uploaded rasters are marked isUploaded.
+      if (img.isUploaded) return false
+      return true
+    })
     draggedAsset.value = null
     draggedPlacedAsset.value = null
     trashVisible.value = false
