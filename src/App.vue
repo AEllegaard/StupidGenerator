@@ -574,39 +574,6 @@ const getSnapshot = () => {
   }
 }
 
-// Autosave should be small enough for localStorage (~5MB). Uploaded images are
-// stored as data URLs which can easily exceed the quota, so we store a trimmed
-// snapshot for autosave: keep placements/dimensions/metadata but drop base64.
-const getAutosaveSnapshot = () => {
-  const snap = getSnapshot()
-  const stripDataUrl = (item) => {
-    if (!item || typeof item !== 'object') return item
-    const clone = { ...item }
-    if (typeof clone.dataUrl === 'string') delete clone.dataUrl
-    if (typeof clone.path === 'string' && clone.path.startsWith('data:')) delete clone.path
-    return clone
-  }
-
-  try {
-    // Don't persist sandbox uploaded images across reload.
-    // (Also prevents localStorage quota errors.)
-    snap.uploadedImages = []
-  } catch (e) {}
-  try {
-    // Keep ONLY Pattern finder background SVGs (identified by renderW/renderH).
-    // All other sandbox background images should not survive reload.
-    const bgs = Array.isArray(snap.backgroundImages) ? snap.backgroundImages : []
-    snap.backgroundImages = bgs.map(stripDataUrl).filter((img) => img && img.renderW && img.renderH)
-  } catch (e) {}
-  try {
-    if (snap.patternImageBackground && typeof snap.patternImageBackground === 'object') {
-      snap.patternImageBackground = stripDataUrl(snap.patternImageBackground)
-    }
-  } catch (e) {}
-
-  return snap
-}
-
 const pushHistory = () => {
   try {
     const snap = getSnapshot()
@@ -735,7 +702,7 @@ const _autosaveRaf = { id: 0, lastStr: '' }
 
 const saveAutosaveNow = () => {
   try {
-    const snap = getAutosaveSnapshot()
+    const snap = getSnapshot()
     const str = JSON.stringify(snap)
     if (str === _autosaveRaf.lastStr) return
     _autosaveRaf.lastStr = str
@@ -782,41 +749,8 @@ const onKeyDown = (e) => {
   }
 }
 
-// Robust Alt/Option tracking.
-// In some production builds / browsers, PointerEvent.altKey can be unreliable.
-// We track Alt globally and use it for "Option + drag" features.
-const altKeyDown = ref(false)
-const onAltKeyDown = (e) => {
-  try {
-    if (e && (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight'))
-      altKeyDown.value = true
-  } catch (err) {}
-}
-const onAltKeyUp = (e) => {
-  try {
-    if (e && (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight'))
-      altKeyDown.value = false
-  } catch (err) {}
-}
-const isAltDown = (event) => {
-  try {
-    if (
-      event &&
-      (event.altKey ||
-        (typeof event.getModifierState === 'function' && event.getModifierState('Alt')))
-    ) {
-      return true
-    }
-  } catch (e) {}
-  return !!altKeyDown.value
-}
-
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
-  window.addEventListener('keydown', onAltKeyDown)
-  window.addEventListener('keyup', onAltKeyUp)
-  // If the window loses focus while Alt is pressed, reset the state.
-  window.addEventListener('blur', onAltKeyUp)
   // Custom preset dropdown: close on outside click / Escape
   window.addEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
   window.addEventListener('keydown', onDocKeyDownForPreset)
@@ -862,9 +796,6 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('keydown', onAltKeyDown)
-  window.removeEventListener('keyup', onAltKeyUp)
-  window.removeEventListener('blur', onAltKeyUp)
   try {
     window.removeEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
   } catch (e) {
@@ -988,15 +919,6 @@ const startDrag = (asset, event) => {
   }
   event.dataTransfer.setData('text/plain', asset.name)
   // show trash while dragging from palette
-  trashVisible.value = true
-  draggedOverTrash.value = false
-}
-
-// Make the trash appear as soon as the user starts the gesture.
-// On some browsers the native `dragstart` event fires late (or only after
-// the pointer moves enough), so we also toggle visibility on pointer down.
-const onPalettePointerDown = (asset) => {
-  draggedAsset.value = asset
   trashVisible.value = true
   draggedOverTrash.value = false
 }
@@ -1350,10 +1272,6 @@ const _globalPointerUpHandler = { fn: null }
 const moveListenersAdded = ref(false)
 const dragActive = ref(false)
 
-// Sandbox: background image drag state. Require Alt/Option only to START the drag,
-// then continue even if the browser drops modifier flags on pointermove.
-const sandboxBgDragActive = ref(false)
-
 // Asset size multiplier: 1 = one grid square wide, 2 = two grid squares wide
 const assetMultiplier = ref(2)
 
@@ -1532,10 +1450,7 @@ const onAssetsLayerPointerDown = (event) => {
   // Selection priority:
   // - Hold Alt/Option to grab BACKGROUND images (even if assets are on top)
   // - Otherwise grab regular placed assets as usual
-  //
-  // Note: On some platforms/browsers `event.altKey` can be unreliable with
-  // Pointer Events. Also treat `getModifierState('Alt')` as Alt/Option.
-  const preferBackground = isAltDown(event)
+  const preferBackground = !!event.altKey
   const found = preferBackground
     ? backgroundImages.value.find((a) => String(a.id) === String(id))
     : placedAssets.value.find((a) => String(a.id) === String(id)) ||
@@ -1557,50 +1472,11 @@ const onAssetsLayerPointerDown = (event) => {
 }
 
 const onCanvasPointerMove = (event) => {
-  // Pointer events should be the primary drag signal in modern browsers.
-  // For sandbox uploaded background images, handle pointermove directly so it
-  // works even if mousemove is throttled/not firing as expected.
-  if (draggedPlacedAsset.value && canvasRef.value && editorMode.value !== 'pattern') {
-    const isBg =
-      draggedPlacedAsset.value.isUploaded ||
-      (backgroundImages.value || []).some((img) => img && img.id === draggedPlacedAsset.value.id)
-    if (isBg) {
-      // Continue if we already started a sandbox BG drag.
-      if (!sandboxBgDragActive.value && !isAltDown(event)) return
-      draggedDuringInteraction.value = true
-      const canvasRect = canvasRef.value.getBoundingClientRect()
-      const px = event.clientX - canvasRect.left
-      const py = event.clientY - canvasRect.top
-
-      const renderW = Math.round(
-        draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value),
-      )
-      const renderH = Math.round(
-        draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value),
-      )
-
-      let nextX = Math.round(px - (dragOffset.value.x || 0))
-      let nextY = Math.round(py - (dragOffset.value.y || 0))
-
-      const minX = -Math.floor(renderW) + 1
-      const minY = -Math.floor(renderH) + 1
-      const maxX = Math.max(1, canvasRect.width - 1)
-      const maxY = Math.max(1, canvasRect.height - 1)
-      nextX = Math.max(minX, Math.min(nextX, maxX))
-      nextY = Math.max(minY, Math.min(nextY, maxY))
-
-      draggedPlacedAsset.value.x = nextX
-      draggedPlacedAsset.value.y = nextY
-      return
-    }
-  }
-
-  // Fallback: delegate to existing move logic (it only relies on clientX/clientY).
+  // Delegate to existing mousemove logic (it only relies on clientX/clientY).
   onCanvasMouseMove(event)
 }
 
 const onCanvasPointerUp = (event) => {
-  sandboxBgDragActive.value = false
   onCanvasMouseUp(event)
 }
 
@@ -1661,45 +1537,17 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
 const onCanvasPointerDown = (event) => {
   // Sandbox: background dragging requires Alt/Option.
   // Pattern finder: allow dragging the big background directly.
-  const altDown = isAltDown(event)
-  if (editorMode.value !== 'pattern' && !altDown) return
+  if (editorMode.value !== 'pattern' && !event.altKey) return
   if (!canvasRef.value) return
   // Don't interfere with palette HTML5 drag/drop.
   if (draggedAsset.value) return
 
   // Pattern finder raster image background should ONLY move with Alt/Option.
-  if (editorMode.value === 'pattern' && patternImageBackground.value && !altDown) return
+  if (editorMode.value === 'pattern' && patternImageBackground.value && !event.altKey) return
 
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const x = event.clientX - canvasRect.left
   const y = event.clientY - canvasRect.top
-
-  // Sandbox: Option-drag should move the TOPMOST background image under the cursor.
-  // We do this at the canvas level (not only on the <img>) so it works even when
-  // pointer events are swallowed by overlays/layers in production.
-  if (editorMode.value !== 'pattern' && altDown) {
-    const hitBg = findTopmostBackgroundImageAt(x, y)
-    if (hitBg) {
-      sandboxBgDragActive.value = true
-      const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hitBg.id}"]`)
-      // Ensure we keep receiving pointer events even if the cursor leaves the canvas.
-      try {
-        if (typeof event.target?.setPointerCapture === 'function' && event.pointerId != null) {
-          event.target.setPointerCapture(event.pointerId)
-        } else if (
-          typeof canvasRef.value?.setPointerCapture === 'function' &&
-          event.pointerId != null
-        ) {
-          canvasRef.value.setPointerCapture(event.pointerId)
-        }
-      } catch (e) {
-        // ignore
-      }
-      startMovingAsset(hitBg, event, el)
-      event.preventDefault()
-      return
-    }
-  }
 
   const hit = findTopmostBackgroundImageAt(x, y)
   if (!hit) return
@@ -1723,43 +1571,6 @@ const onCanvasPointerDown = (event) => {
 
 const onCanvasMouseMove = (event) => {
   if (!draggedPlacedAsset.value || !canvasRef.value) return
-
-  // Sandbox: allow moving uploaded/background images only while Alt/Option is held.
-  // These images live in `backgroundImages` and use simple top/left positioning.
-  if (
-    editorMode.value !== 'pattern' &&
-    (draggedPlacedAsset.value.isUploaded ||
-      (backgroundImages.value || []).some((img) => img && img.id === draggedPlacedAsset.value.id))
-  ) {
-    if (!isAltDown(event)) return
-    draggedDuringInteraction.value = true
-
-    const canvasRect = canvasRef.value.getBoundingClientRect()
-    const mouseX = event.clientX - canvasRect.left
-    const mouseY = event.clientY - canvasRect.top
-
-    const renderW = Math.round(
-      draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value),
-    )
-    const renderH = Math.round(
-      draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value),
-    )
-
-    let nextX = Math.round(mouseX - (dragOffset.value.x || 0))
-    let nextY = Math.round(mouseY - (dragOffset.value.y || 0))
-
-    // Keep at least 1px visible inside the canvas.
-    const minX = -Math.floor(renderW) + 1
-    const minY = -Math.floor(renderH) + 1
-    const maxX = Math.max(1, canvasRect.width - 1)
-    const maxY = Math.max(1, canvasRect.height - 1)
-    nextX = Math.max(minX, Math.min(nextX, maxX))
-    nextY = Math.max(minY, Math.min(nextY, maxY))
-
-    draggedPlacedAsset.value.x = nextX
-    draggedPlacedAsset.value.y = nextY
-    return
-  }
 
   // Pattern finder raster image background: move freely (no grid snapping),
   // only when Alt/Option is held down (enforced by pointerdown guard).
@@ -3715,7 +3526,6 @@ const randomizePattern = () => {
               v-for="asset in assets"
               :key="asset.name"
               draggable="true"
-              @pointerdown="onPalettePointerDown(asset)"
               @dragstart="startDrag(asset, $event)"
               @dragend="onDragEnd"
               @click.prevent="onPaletteAssetClick(asset)"
@@ -3732,7 +3542,6 @@ const randomizePattern = () => {
               v-for="asset in uploadedSvgAssets"
               :key="asset.name + asset.path"
               draggable="true"
-              @pointerdown="onPalettePointerDown(asset)"
               @dragstart="startDrag(asset, $event)"
               @dragend="onDragEnd"
               @click.prevent="onPaletteAssetClick(asset)"
@@ -4022,7 +3831,6 @@ const randomizePattern = () => {
             :key="img.name + img.dataUrl"
             class="asset-button uploaded-thumb relative"
             draggable="true"
-            @pointerdown="onPalettePointerDown(img)"
             @dragstart="startDrag(img, $event)"
             @dragend="onDragEnd"
             @click.prevent="spawnAssetCentered(img)"
