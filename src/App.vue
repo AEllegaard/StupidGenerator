@@ -45,7 +45,8 @@ const dismissDeviceWarning = () => {
 
 const canvasDimensions = [
   //SoMe presets
-  { name: 'Instagram Post', width: 1080, height: 1080 },
+  { name: 'Instagram Post Small', width: 1080, height: 1350 },
+  { name: 'Instagram Post Big', width: 1080, height: 1440 },
   { name: 'Instagram Story', width: 1080, height: 1920 },
   { name: 'Facebook Post', width: 1200, height: 630 },
   { name: 'Twitter Post', width: 1200, height: 675 },
