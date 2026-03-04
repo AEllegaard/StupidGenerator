@@ -923,6 +923,15 @@ const startDrag = (asset, event) => {
   draggedOverTrash.value = false
 }
 
+// Make the trash appear as soon as the user starts the gesture.
+// On some browsers the native `dragstart` event fires late (or only after
+// the pointer moves enough), so we also toggle visibility on pointer down.
+const onPalettePointerDown = (asset) => {
+  draggedAsset.value = asset
+  trashVisible.value = true
+  draggedOverTrash.value = false
+}
+
 const onDragEnd = (event) => {
   // hide trash when palette drag ends (drop or cancel)
   trashVisible.value = false
@@ -3526,6 +3535,7 @@ const randomizePattern = () => {
               v-for="asset in assets"
               :key="asset.name"
               draggable="true"
+              @pointerdown="onPalettePointerDown(asset)"
               @dragstart="startDrag(asset, $event)"
               @dragend="onDragEnd"
               @click.prevent="onPaletteAssetClick(asset)"
@@ -3542,6 +3552,7 @@ const randomizePattern = () => {
               v-for="asset in uploadedSvgAssets"
               :key="asset.name + asset.path"
               draggable="true"
+              @pointerdown="onPalettePointerDown(asset)"
               @dragstart="startDrag(asset, $event)"
               @dragend="onDragEnd"
               @click.prevent="onPaletteAssetClick(asset)"
@@ -3831,6 +3842,7 @@ const randomizePattern = () => {
             :key="img.name + img.dataUrl"
             class="asset-button uploaded-thumb relative"
             draggable="true"
+            @pointerdown="onPalettePointerDown(img)"
             @dragstart="startDrag(img, $event)"
             @dragend="onDragEnd"
             @click.prevent="spawnAssetCentered(img)"

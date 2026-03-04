@@ -338,8 +338,9 @@ body {
 }
 
 .canvas-preset.dragging-out {
-  overflow: visible;
-  z-index: 1000; /* bring the dragging canvas above other UI so the dragged asset can be seen */
+  /* Keep clipping active even while dragging so assets don't stop being cut by the canvas outline */
+  overflow: hidden;
+  z-index: 1000; /* still bring the canvas above other UI during drag */
 }
 
 .grid-container {
@@ -665,7 +666,7 @@ body {
   transition:
     transform 180ms cubic-bezier(0.2, 0.9, 0.2, 1),
     opacity 160ms ease;
-  z-index: 30;
+  z-index: 1000;
 }
 
 /* Background image layer (under assets) */
@@ -683,6 +684,8 @@ body {
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%, 0) scale(1);
+  /* Bring the trash to the very top when visible (above sticky banners, dropdowns, etc.) */
+  z-index: 6000;
 }
 
 .trash.over {
