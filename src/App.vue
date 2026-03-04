@@ -3826,7 +3826,7 @@ const randomizePattern = () => {
       <div v-if="editorMode === 'sandbox'" class="ml-3 mt-4">
         <h2 class="font-object font-medium text-base mt-10">Upload image</h2>
         <p class="font-object text-xs mb-3 text-gray-500">
-          Click to upload, drag to add, <strong>hold alt/option down and drag to move.</strong>
+          Click to upload, click to add, <strong>hold alt/option down and drag to move.</strong>
         </p>
 
         <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
