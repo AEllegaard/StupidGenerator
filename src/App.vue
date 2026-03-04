@@ -528,18 +528,44 @@ const removeCustomSwatch = (preset) => {
 
 const selectColorPreset = (preset) => {
   pushHistory()
+  const prevAssetColor = selectedAssetColor.value
+
   selectedBackgroundColor.value = preset.bg
   selectedAssetColor.value = preset.asset
+
+  // Update already placed SVG assets that were using the previous palette tint.
+  // We only update assets that either:
+  // - have no explicit `color` set, OR
+  // - have `color` equal to the previous palette color (i.e. still palette-driven)
+  try {
+    ;(placedAssets.value || []).forEach((a) => {
+      if (!a) return
+      if (!a.color || a.color === prevAssetColor) a.color = selectedAssetColor.value
+    })
+  } catch (e) {
+    // ignore
+  }
 }
 
 // Swap background and asset colors
 const invertColors = () => {
   if (!canInvertColors.value) return
   pushHistory()
+  const prevAssetColor = selectedAssetColor.value
   const bg = selectedBackgroundColor.value
   const asset = selectedAssetColor.value
   selectedBackgroundColor.value = asset
   selectedAssetColor.value = bg
+
+  // Keep already placed SVG assets in sync (same rule as selectColorPreset).
+  try {
+    ;(placedAssets.value || []).forEach((a) => {
+      if (!a) return
+      if (!a.color || a.color === prevAssetColor) a.color = selectedAssetColor.value
+    })
+  } catch (e) {
+    // ignore
+  }
 }
 
 // Simple undo stack (keep snapshots of relevant app state)
