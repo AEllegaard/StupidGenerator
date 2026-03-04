@@ -574,6 +574,36 @@ const getSnapshot = () => {
   }
 }
 
+// Autosave should be small enough for localStorage (~5MB). Uploaded images are
+// stored as data URLs which can easily exceed the quota, so we store a trimmed
+// snapshot for autosave: keep placements/dimensions/metadata but drop base64.
+const getAutosaveSnapshot = () => {
+  const snap = getSnapshot()
+  const stripDataUrl = (item) => {
+    if (!item || typeof item !== 'object') return item
+    const clone = { ...item }
+    if (typeof clone.dataUrl === 'string') delete clone.dataUrl
+    if (typeof clone.path === 'string' && clone.path.startsWith('data:')) delete clone.path
+    return clone
+  }
+
+  try {
+    if (Array.isArray(snap.uploadedImages))
+      snap.uploadedImages = snap.uploadedImages.map(stripDataUrl)
+  } catch (e) {}
+  try {
+    if (Array.isArray(snap.backgroundImages))
+      snap.backgroundImages = snap.backgroundImages.map(stripDataUrl)
+  } catch (e) {}
+  try {
+    if (snap.patternImageBackground && typeof snap.patternImageBackground === 'object') {
+      snap.patternImageBackground = stripDataUrl(snap.patternImageBackground)
+    }
+  } catch (e) {}
+
+  return snap
+}
+
 const pushHistory = () => {
   try {
     const snap = getSnapshot()
@@ -702,7 +732,7 @@ const _autosaveRaf = { id: 0, lastStr: '' }
 
 const saveAutosaveNow = () => {
   try {
-    const snap = getSnapshot()
+    const snap = getAutosaveSnapshot()
     const str = JSON.stringify(snap)
     if (str === _autosaveRaf.lastStr) return
     _autosaveRaf.lastStr = str
