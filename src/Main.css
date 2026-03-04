@@ -623,6 +623,11 @@ body {
   mask-position: center;
 }
 
+/* Uploaded images (<img>) should be draggable/clickable just like SVG assets */
+.placed-uploaded {
+  pointer-events: auto;
+}
+
 /* Pattern finder: big uploaded SVG background.
    Ensure scaling/rotation always pivot around the element center.
    (Some browsers can behave oddly with inline transformOrigin in combination

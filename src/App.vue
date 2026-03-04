@@ -588,12 +588,15 @@ const getAutosaveSnapshot = () => {
   }
 
   try {
-    if (Array.isArray(snap.uploadedImages))
-      snap.uploadedImages = snap.uploadedImages.map(stripDataUrl)
+    // Don't persist sandbox uploaded images across reload.
+    // (Also prevents localStorage quota errors.)
+    snap.uploadedImages = []
   } catch (e) {}
   try {
-    if (Array.isArray(snap.backgroundImages))
-      snap.backgroundImages = snap.backgroundImages.map(stripDataUrl)
+    // Keep ONLY Pattern finder background SVGs (identified by renderW/renderH).
+    // All other sandbox background images should not survive reload.
+    const bgs = Array.isArray(snap.backgroundImages) ? snap.backgroundImages : []
+    snap.backgroundImages = bgs.map(stripDataUrl).filter((img) => img && img.renderW && img.renderH)
   } catch (e) {}
   try {
     if (snap.patternImageBackground && typeof snap.patternImageBackground === 'object') {
@@ -1550,7 +1553,44 @@ const onAssetsLayerPointerDown = (event) => {
 }
 
 const onCanvasPointerMove = (event) => {
-  // Delegate to existing mousemove logic (it only relies on clientX/clientY).
+  // Pointer events should be the primary drag signal in modern browsers.
+  // For sandbox uploaded background images, handle pointermove directly so it
+  // works even if mousemove is throttled/not firing as expected.
+  if (draggedPlacedAsset.value && canvasRef.value && editorMode.value !== 'pattern') {
+    const isBg =
+      draggedPlacedAsset.value.isUploaded ||
+      (backgroundImages.value || []).some((img) => img && img.id === draggedPlacedAsset.value.id)
+    if (isBg) {
+      if (!isAltDown(event)) return
+      draggedDuringInteraction.value = true
+      const canvasRect = canvasRef.value.getBoundingClientRect()
+      const px = event.clientX - canvasRect.left
+      const py = event.clientY - canvasRect.top
+
+      const renderW = Math.round(
+        draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value),
+      )
+      const renderH = Math.round(
+        draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value),
+      )
+
+      let nextX = Math.round(px - (dragOffset.value.x || 0))
+      let nextY = Math.round(py - (dragOffset.value.y || 0))
+
+      const minX = -Math.floor(renderW) + 1
+      const minY = -Math.floor(renderH) + 1
+      const maxX = Math.max(1, canvasRect.width - 1)
+      const maxY = Math.max(1, canvasRect.height - 1)
+      nextX = Math.max(minX, Math.min(nextX, maxX))
+      nextY = Math.max(minY, Math.min(nextY, maxY))
+
+      draggedPlacedAsset.value.x = nextX
+      draggedPlacedAsset.value.y = nextY
+      return
+    }
+  }
+
+  // Fallback: delegate to existing move logic (it only relies on clientX/clientY).
   onCanvasMouseMove(event)
 }
 
@@ -1635,6 +1675,19 @@ const onCanvasPointerDown = (event) => {
     const hitBg = findTopmostBackgroundImageAt(x, y)
     if (hitBg) {
       const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hitBg.id}"]`)
+      // Ensure we keep receiving pointer events even if the cursor leaves the canvas.
+      try {
+        if (typeof event.target?.setPointerCapture === 'function' && event.pointerId != null) {
+          event.target.setPointerCapture(event.pointerId)
+        } else if (
+          typeof canvasRef.value?.setPointerCapture === 'function' &&
+          event.pointerId != null
+        ) {
+          canvasRef.value.setPointerCapture(event.pointerId)
+        }
+      } catch (e) {
+        // ignore
+      }
       startMovingAsset(hitBg, event, el)
       event.preventDefault()
       return
