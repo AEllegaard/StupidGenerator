@@ -1631,8 +1631,12 @@ const onCanvasMouseMove = (event) => {
     const mouseX = event.clientX - canvasRect.left
     const mouseY = event.clientY - canvasRect.top
 
-    const renderW = Math.round(draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value))
-    const renderH = Math.round(draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value))
+    const renderW = Math.round(
+      draggedPlacedAsset.value.renderW || getAssetPixelSize(draggedPlacedAsset.value),
+    )
+    const renderH = Math.round(
+      draggedPlacedAsset.value.renderH || getAssetPixelSize(draggedPlacedAsset.value),
+    )
 
     let nextX = Math.round(mouseX - (dragOffset.value.x || 0))
     let nextY = Math.round(mouseY - (dragOffset.value.y || 0))
