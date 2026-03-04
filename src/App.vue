@@ -1350,6 +1350,10 @@ const _globalPointerUpHandler = { fn: null }
 const moveListenersAdded = ref(false)
 const dragActive = ref(false)
 
+// Sandbox: background image drag state. Require Alt/Option only to START the drag,
+// then continue even if the browser drops modifier flags on pointermove.
+const sandboxBgDragActive = ref(false)
+
 // Asset size multiplier: 1 = one grid square wide, 2 = two grid squares wide
 const assetMultiplier = ref(2)
 
@@ -1561,7 +1565,8 @@ const onCanvasPointerMove = (event) => {
       draggedPlacedAsset.value.isUploaded ||
       (backgroundImages.value || []).some((img) => img && img.id === draggedPlacedAsset.value.id)
     if (isBg) {
-      if (!isAltDown(event)) return
+      // Continue if we already started a sandbox BG drag.
+      if (!sandboxBgDragActive.value && !isAltDown(event)) return
       draggedDuringInteraction.value = true
       const canvasRect = canvasRef.value.getBoundingClientRect()
       const px = event.clientX - canvasRect.left
@@ -1595,6 +1600,7 @@ const onCanvasPointerMove = (event) => {
 }
 
 const onCanvasPointerUp = (event) => {
+  sandboxBgDragActive.value = false
   onCanvasMouseUp(event)
 }
 
@@ -1674,6 +1680,7 @@ const onCanvasPointerDown = (event) => {
   if (editorMode.value !== 'pattern' && altDown) {
     const hitBg = findTopmostBackgroundImageAt(x, y)
     if (hitBg) {
+      sandboxBgDragActive.value = true
       const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hitBg.id}"]`)
       // Ensure we keep receiving pointer events even if the cursor leaves the canvas.
       try {
