@@ -3722,17 +3722,17 @@ const randomizePattern = () => {
           </div>
 
           <h2 class="font-object font-medium text-base mt-10">Controls</h2>
-          <p class="font-object text-xs mb-2 text-gray-500">
-            Enable/disable pattern randomization options.
-          </p>
-
+          
           <button
-            class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
-            @click.prevent="randomizePatternBackgroundPosition"
+          class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
+          @click.prevent="randomizePatternBackgroundPosition"
           >
-            Random
-          </button>
-
+          Random
+        </button>
+        
+        <p class="font-object text-xs mb-2 text-gray-500">
+          Enable/disable pattern randomization options.
+        </p>
           <div class="flex gap-2 w-[95%] mt-2">
             <button
               type="button"
