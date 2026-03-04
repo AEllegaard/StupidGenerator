@@ -1598,6 +1598,19 @@ const onCanvasPointerDown = (event) => {
   const x = event.clientX - canvasRect.left
   const y = event.clientY - canvasRect.top
 
+  // Sandbox: Option-drag should move the TOPMOST background image under the cursor.
+  // We do this at the canvas level (not only on the <img>) so it works even when
+  // pointer events are swallowed by overlays/layers in production.
+  if (editorMode.value !== 'pattern' && altDown) {
+    const hitBg = findTopmostBackgroundImageAt(x, y)
+    if (hitBg) {
+      const el = canvasRef.value.querySelector(`.placed-asset-shape[data-id="${hitBg.id}"]`)
+      startMovingAsset(hitBg, event, el)
+      event.preventDefault()
+      return
+    }
+  }
+
   const hit = findTopmostBackgroundImageAt(x, y)
   if (!hit) return
 
@@ -1623,7 +1636,11 @@ const onCanvasMouseMove = (event) => {
 
   // Sandbox: allow moving uploaded/background images only while Alt/Option is held.
   // These images live in `backgroundImages` and use simple top/left positioning.
-  if (editorMode.value !== 'pattern' && draggedPlacedAsset.value.isUploaded) {
+  if (
+    editorMode.value !== 'pattern' &&
+    (draggedPlacedAsset.value.isUploaded ||
+      (backgroundImages.value || []).some((img) => img && img.id === draggedPlacedAsset.value.id))
+  ) {
     if (!isAltDown(event)) return
     draggedDuringInteraction.value = true
 
