@@ -490,6 +490,23 @@ const persistCustomSwatches = () => {
 const selectedBackgroundColor = ref(colorPresets.value[0].bg)
 const selectedAssetColor = ref(colorPresets.value[0].asset)
 
+// When the user tweaks the custom color inputs, the background updates
+// immediately because it's bound to canvasStyle, but assets only update if we
+// propagate the palette tint to already placed items.
+// We mirror the same rule as selectColorPreset/invertColors:
+// update assets that are still palette-driven (no explicit color, or equal to
+// the previous palette color).
+watch(selectedAssetColor, (next, prev) => {
+  try {
+    ;(placedAssets.value || []).forEach((a) => {
+      if (!a) return
+      if (!a.color || a.color === prev) a.color = next
+    })
+  } catch (e) {
+    // ignore
+  }
+})
+
 const canInvertColors = computed(() => (colorPresets.value || []).length >= 2)
 
 // Keep predefined presets on the top row; render custom swatches in a row underneath.
@@ -964,8 +981,23 @@ const startDrag = (asset, event) => {
   event.dataTransfer.effectAllowed = 'copy'
   // Some browsers / nested layers can cause the reactive ref to be cleared
   // before drop. Store a full payload so onDrop can recover reliably.
+  // For uploaded images we also snapshot width/height so the drop can render
+  // as an <img> immediately (instead of a temporary colored shape).
   try {
-    event.dataTransfer.setData('application/x-stupidgenerator-asset', JSON.stringify(asset))
+    const payload = (() => {
+      if (!asset || !asset.isUploaded) return asset
+      return {
+        ...asset,
+        // Ensure these always exist in payload so canvas can size correctly
+        naturalW: asset.naturalW ?? 0,
+        naturalH: asset.naturalH ?? 0,
+        renderW: asset.renderW ?? 0,
+        renderH: asset.renderH ?? 0,
+        dataUrl: asset.dataUrl || asset.path || '',
+        type: asset.type || 'raster',
+      }
+    })()
+    event.dataTransfer.setData('application/x-stupidgenerator-asset', JSON.stringify(payload))
   } catch (e) {
     // ignore
   }
