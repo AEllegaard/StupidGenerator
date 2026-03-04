@@ -2790,6 +2790,13 @@ const onUploadImage = (e) => {
   const files = e.target.files
   if (!files || !files.length) return
   for (const file of files) {
+    // Guard: only accept raster images here (png/jpg/webp/gif/avif etc).
+    // SVGs have a separate upload flow.
+    const isSvg =
+      file.type === 'image/svg+xml' ||
+      ((file.name || '').toLowerCase().endsWith('.svg') && !file.type)
+    if (isSvg) continue
+
     const reader = new FileReader()
     reader.onload = (ev) => {
       const dataUrl = ev.target.result
@@ -2804,6 +2811,7 @@ const onUploadImage = (e) => {
             path: dataUrl,
             dataUrl,
             isUploaded: true,
+            type: 'raster',
             naturalW: img.naturalWidth || img.width || null,
             naturalH: img.naturalHeight || img.height || null,
           })
@@ -2814,6 +2822,7 @@ const onUploadImage = (e) => {
             path: dataUrl,
             dataUrl,
             isUploaded: true,
+            type: 'raster',
           })
         }
         img.src = dataUrl
@@ -2823,6 +2832,7 @@ const onUploadImage = (e) => {
           path: dataUrl,
           dataUrl,
           isUploaded: true,
+          type: 'raster',
         })
       }
     }
