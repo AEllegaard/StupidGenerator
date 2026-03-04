@@ -785,7 +785,10 @@ const restoreAutosave = () => {
 // Pattern mode can still restore its working state.
 const resetSandboxForReload = () => {
   try {
-    placedAssets.value = []
+    // Remove anything on the sandbox canvas, but keep the uploaded palette in UI.
+    // For SVG assets we only remove items that came from uploads (isUploadedSvg)
+    // so predefined assets can't accidentally be affected.
+    placedAssets.value = (placedAssets.value || []).filter((a) => a && !a.isUploadedSvg)
     // Keep Pattern finder background(s) if they exist, but remove sandbox-uploaded
     // raster images from the canvas.
     backgroundImages.value = (backgroundImages.value || []).filter((img) => {
