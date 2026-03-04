@@ -1459,7 +1459,12 @@ const onAssetsLayerPointerDown = (event) => {
   // Selection priority:
   // - Hold Alt/Option to grab BACKGROUND images (even if assets are on top)
   // - Otherwise grab regular placed assets as usual
-  const preferBackground = !!event.altKey
+  //
+  // Note: On some platforms/browsers `event.altKey` can be unreliable with
+  // Pointer Events. Also treat `getModifierState('Alt')` as Alt/Option.
+  const preferBackground =
+    !!event.altKey ||
+    (typeof event.getModifierState === 'function' && event.getModifierState('Alt'))
   const found = preferBackground
     ? backgroundImages.value.find((a) => String(a.id) === String(id))
     : placedAssets.value.find((a) => String(a.id) === String(id)) ||
@@ -1546,13 +1551,16 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
 const onCanvasPointerDown = (event) => {
   // Sandbox: background dragging requires Alt/Option.
   // Pattern finder: allow dragging the big background directly.
-  if (editorMode.value !== 'pattern' && !event.altKey) return
+  const altDown =
+    !!event.altKey ||
+    (typeof event.getModifierState === 'function' && event.getModifierState('Alt'))
+  if (editorMode.value !== 'pattern' && !altDown) return
   if (!canvasRef.value) return
   // Don't interfere with palette HTML5 drag/drop.
   if (draggedAsset.value) return
 
   // Pattern finder raster image background should ONLY move with Alt/Option.
-  if (editorMode.value === 'pattern' && patternImageBackground.value && !event.altKey) return
+  if (editorMode.value === 'pattern' && patternImageBackground.value && !altDown) return
 
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const x = event.clientX - canvasRect.left
