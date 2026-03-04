@@ -809,6 +809,38 @@ const resetSandboxForReload = () => {
   }
 }
 
+// Manual reset button (top-right): clears the *canvas* but keeps UI state
+// like uploads and swatches.
+const resetCanvas = () => {
+  try {
+    pushHistory()
+
+    // Clear placed SVG assets on canvas
+    placedAssets.value = []
+
+    // Clear sandbox-uploaded raster images on canvas, but keep pattern backgrounds (if any)
+    backgroundImages.value = (backgroundImages.value || []).filter((img) => {
+      if (!img) return false
+      if (img.isUploaded) return false
+      return true
+    })
+
+    // Clear any active drags/UI transient state
+    draggedAsset.value = null
+    draggedPlacedAsset.value = null
+    trashVisible.value = false
+    draggedOverTrash.value = false
+    lastSnap.value = { x: 0, y: 0 }
+    try {
+      sandboxAltDragStart.value = null
+    } catch (e) {
+      // ignore if not present
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 // key handler for Ctrl+Z / Cmd+Z
 const onKeyDown = (e) => {
   const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
@@ -3722,17 +3754,17 @@ const randomizePattern = () => {
           </div>
 
           <h2 class="font-object font-medium text-base mt-10">Controls</h2>
-          
+
           <button
-          class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
-          @click.prevent="randomizePatternBackgroundPosition"
+            class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
+            @click.prevent="randomizePatternBackgroundPosition"
           >
-          Random
-        </button>
-        
-        <p class="font-object text-xs mb-2 text-gray-500">
-          Enable/disable pattern randomization options.
-        </p>
+            Random
+          </button>
+
+          <p class="font-object text-xs mb-2 text-gray-500">
+            Enable/disable pattern randomization options.
+          </p>
           <div class="flex gap-2 w-[95%] mt-2">
             <button
               type="button"
@@ -3967,6 +3999,23 @@ const randomizePattern = () => {
         </div>
       </div>
     </div>
+
+    <!-- Reset button: fixed top-right in viewport -->
+    <button
+      type="button"
+      class="btn btn--sm font-object"
+      @click.prevent="resetCanvas"
+      :style="{
+        position: 'fixed',
+        top: '12px',
+        right: '12px',
+        zIndex: 9999,
+      }"
+      v-show="!showDeviceWarning"
+      title="Reset canvas"
+    >
+      Reset canvas
+    </button>
 
     <!-- Canvas Section -->
     <div ref="canvasColumnRef" class="canvas m-2">
