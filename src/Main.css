@@ -446,13 +446,12 @@ body {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .custom-swatch-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   width: 100%;
   flex-wrap: nowrap;
 }
