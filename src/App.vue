@@ -749,8 +749,41 @@ const onKeyDown = (e) => {
   }
 }
 
+// Robust Alt/Option tracking.
+// In some production builds / browsers, PointerEvent.altKey can be unreliable.
+// We track Alt globally and use it for "Option + drag" features.
+const altKeyDown = ref(false)
+const onAltKeyDown = (e) => {
+  try {
+    if (e && (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight'))
+      altKeyDown.value = true
+  } catch (err) {}
+}
+const onAltKeyUp = (e) => {
+  try {
+    if (e && (e.key === 'Alt' || e.code === 'AltLeft' || e.code === 'AltRight'))
+      altKeyDown.value = false
+  } catch (err) {}
+}
+const isAltDown = (event) => {
+  try {
+    if (
+      event &&
+      (event.altKey ||
+        (typeof event.getModifierState === 'function' && event.getModifierState('Alt')))
+    ) {
+      return true
+    }
+  } catch (e) {}
+  return !!altKeyDown.value
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keydown', onAltKeyDown)
+  window.addEventListener('keyup', onAltKeyUp)
+  // If the window loses focus while Alt is pressed, reset the state.
+  window.addEventListener('blur', onAltKeyUp)
   // Custom preset dropdown: close on outside click / Escape
   window.addEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
   window.addEventListener('keydown', onDocKeyDownForPreset)
@@ -796,6 +829,9 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keydown', onAltKeyDown)
+  window.removeEventListener('keyup', onAltKeyUp)
+  window.removeEventListener('blur', onAltKeyUp)
   try {
     window.removeEventListener('pointerdown', onDocPointerDownForPreset, { capture: true })
   } catch (e) {
@@ -1462,9 +1498,7 @@ const onAssetsLayerPointerDown = (event) => {
   //
   // Note: On some platforms/browsers `event.altKey` can be unreliable with
   // Pointer Events. Also treat `getModifierState('Alt')` as Alt/Option.
-  const preferBackground =
-    !!event.altKey ||
-    (typeof event.getModifierState === 'function' && event.getModifierState('Alt'))
+  const preferBackground = isAltDown(event)
   const found = preferBackground
     ? backgroundImages.value.find((a) => String(a.id) === String(id))
     : placedAssets.value.find((a) => String(a.id) === String(id)) ||
@@ -1551,9 +1585,7 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
 const onCanvasPointerDown = (event) => {
   // Sandbox: background dragging requires Alt/Option.
   // Pattern finder: allow dragging the big background directly.
-  const altDown =
-    !!event.altKey ||
-    (typeof event.getModifierState === 'function' && event.getModifierState('Alt'))
+  const altDown = isAltDown(event)
   if (editorMode.value !== 'pattern' && !altDown) return
   if (!canvasRef.value) return
   // Don't interfere with palette HTML5 drag/drop.
