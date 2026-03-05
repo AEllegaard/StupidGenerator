@@ -991,13 +991,109 @@ watch(
   },
 )
 
-// Calculate cell size to ensure perfect squares that fit within canvas
-const cellSize = computed(() => {
-  const canvasWidth = currentCanvasPreset.value.width
+// --- Grid overlay + snapping measurements ---------------------------
+// IMPORTANT: The grid overlay must use the *same* pixel math as snapping.
+// Snapping uses DOM pixels from canvasRef.getBoundingClientRect().
+// The overlay previously used preset dimensions + 1fr rows, which can drift
+// (especially in Y). We keep a reactive DOM-pixel size for the canvas.
+const canvasPx = ref({ width: 0, height: 0 })
+let canvasResizeObserver = null
 
-  // Cell size is determined by dividing canvas width by number of columns
-  // This ensures we get exactly gridSize number of columns that fill the width
-  return canvasWidth / gridSize.value
+const updateCanvasPx = () => {
+  try {
+    if (!canvasRef.value || !canvasRef.value.getBoundingClientRect) return
+    const r = canvasRef.value.getBoundingClientRect()
+    canvasPx.value = {
+      width: Math.max(0, r.width || 0),
+      height: Math.max(0, r.height || 0),
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+onMounted(() => {
+  updateCanvasPx()
+  window.addEventListener('resize', updateCanvasPx)
+
+  // Observe the canvas element itself so we catch first-layout and any
+  // CSS-driven resizes (fresh reload often measures 0/old size once).
+  try {
+    if (typeof ResizeObserver !== 'undefined') {
+      canvasResizeObserver = new ResizeObserver(() => {
+        updateCanvasPx()
+      })
+      if (canvasRef.value) canvasResizeObserver.observe(canvasRef.value)
+    }
+  } catch (e) {
+    // ignore
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateCanvasPx)
+  try {
+    if (canvasResizeObserver) canvasResizeObserver.disconnect()
+  } catch (e) {
+    // ignore
+  }
+  canvasResizeObserver = null
+})
+
+watch(
+  () => [gridSize.value, currentCanvasPreset.value?.name, editorMode.value],
+  async () => {
+    await nextTick()
+    updateCanvasPx()
+  },
+)
+
+// Single source of truth for grid pixel math.
+// Everything (overlay, snapping, placement sizes) should use this.
+const gridMetrics = computed(() => {
+  const cols = Math.max(1, gridColumns.value)
+  const rows = Math.max(1, gridRows.value)
+  const totalW = Number(canvasPx.value.width || 0)
+  const totalH = Number(canvasPx.value.height || 0)
+
+  // Distribute remainder pixels across the first N columns/rows so the grid
+  // covers the canvas exactly *and* stays integer-aligned.
+  const baseW = Math.max(1, Math.floor(totalW / cols))
+  const baseH = Math.max(1, Math.floor(totalH / rows))
+  const remW = Math.max(0, Math.round(totalW - baseW * cols))
+  const remH = Math.max(0, Math.round(totalH - baseH * rows))
+
+  const colWidths = Array.from({ length: cols }, (_, i) => baseW + (i < remW ? 1 : 0))
+  const rowHeights = Array.from({ length: rows }, (_, i) => baseH + (i < remH ? 1 : 0))
+
+  // Prefix sums to map pointer->cell and compute intersection positions.
+  const colX = new Array(cols + 1)
+  colX[0] = 0
+  for (let i = 0; i < cols; i++) colX[i + 1] = colX[i] + colWidths[i]
+
+  const rowY = new Array(rows + 1)
+  rowY[0] = 0
+  for (let i = 0; i < rows; i++) rowY[i + 1] = rowY[i] + rowHeights[i]
+
+  const gridW = colX[cols]
+  const gridH = rowY[rows]
+
+  return {
+    cols,
+    rows,
+    totalW,
+    totalH,
+    baseW,
+    baseH,
+    remW,
+    remH,
+    colWidths,
+    rowHeights,
+    colX,
+    rowY,
+    gridW,
+    gridH,
+  }
 })
 
 // Calculate how many cells actually fit in each dimension
@@ -1007,20 +1103,26 @@ const gridColumns = computed(() => {
 
 const gridRows = computed(() => {
   const canvasHeight = currentCanvasPreset.value.height
-  // Calculate how many rows of perfect squares fit in the height
-  const calculatedRows = Math.floor(canvasHeight / cellSize.value)
+  // Calculate how many rows of perfect squares fit in the height (in preset units).
+  // NOTE: rows count matters for both overlay + snapping, but the pixel size of rows
+  // MUST come from DOM pixels (see gridStyle below).
+  const cellSizeByPreset = currentCanvasPreset.value.width / Math.max(1, gridSize.value)
+  const calculatedRows = Math.floor(canvasHeight / Math.max(1, cellSizeByPreset))
   // Ensure minimum 2 rows
   return Math.max(calculatedRows, 2)
 })
 
 const gridStyle = computed(() => {
+  const { colWidths, rowHeights, gridW, gridH } = gridMetrics.value
+
   return {
     display: 'grid',
-    gridTemplateColumns: `repeat(${gridColumns.value}, 1fr)`,
-    gridTemplateRows: `repeat(${gridRows.value}, 1fr)`,
+    gridTemplateColumns: colWidths.map((w) => `${w}px`).join(' '),
+    gridTemplateRows: rowHeights.map((h) => `${h}px`).join(' '),
     gap: '0px',
-    width: '100%',
-    height: '100%',
+    width: `${gridW}px`,
+    height: `${gridH}px`,
+    transform: 'translate(0px, 0px)',
   }
 })
 
@@ -1032,26 +1134,51 @@ const gridCells = computed(() => {
 // - 1× assets: snap to CENTER of nearest cell
 // - 2×+ assets (and uploaded images): snap to nearest GRID INTERSECTION (corner)
 const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, multiplier = 1) => {
-  const cellWidth = canvasWidth / gridColumns.value
-  const cellHeight = canvasHeight / Math.max(1, gridRows.value)
+  // Snap math must match overlay + placement. Use the shared, remainder-distributed grid.
+  const { cols, rows, colX, rowY, gridW, gridH } = gridMetrics.value
 
-  // Clamp pointer inside the canvas to keep intersection math stable
-  const px = Math.max(0, Math.min(canvasWidth, pointerX))
-  const py = Math.max(0, Math.min(canvasHeight, pointerY))
+  // Clamp pointer inside effective grid area.
+  const px = Math.max(0, Math.min(gridW, pointerX))
+  const py = Math.max(0, Math.min(gridH, pointerY))
+
+  const findIndex = (prefix, v) => {
+    // prefix length is N+1, monotonic.
+    // Return the cell index in [0, N-1] such that prefix[i] <= v < prefix[i+1].
+    let lo = 0
+    let hi = prefix.length - 2
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (v < prefix[mid]) hi = mid - 1
+      else if (v >= prefix[mid + 1]) lo = mid + 1
+      else return mid
+    }
+    return Math.max(0, Math.min(prefix.length - 2, lo))
+  }
 
   if ((multiplier || 1) > 1) {
-    // Nearest intersection
-    const col = Math.round(px / cellWidth)
-    const row = Math.round(py / cellHeight)
-    const clampedCol = Math.max(0, Math.min(gridColumns.value, col))
-    const clampedRow = Math.max(0, Math.min(gridRows.value, row))
-    return { x: clampedCol * cellWidth, y: clampedRow * cellHeight }
+    // Nearest intersection: choose nearest boundary line.
+    const colIdx = findIndex(colX, px)
+    const rowIdx = findIndex(rowY, py)
+
+    const left = colX[colIdx]
+    const right = colX[colIdx + 1]
+    const top = rowY[rowIdx]
+    const bottom = rowY[rowIdx + 1]
+
+    const snapCol = px - left < right - px ? colIdx : colIdx + 1
+    const snapRow = py - top < bottom - py ? rowIdx : rowIdx + 1
+
+    const clampedCol = Math.max(0, Math.min(cols, snapCol))
+    const clampedRow = Math.max(0, Math.min(rows, snapRow))
+    return { x: colX[clampedCol], y: rowY[clampedRow] }
   }
 
   // 1×: center of nearest cell
-  const col = Math.max(0, Math.min(gridColumns.value - 1, Math.floor(px / cellWidth)))
-  const row = Math.max(0, Math.min(gridRows.value - 1, Math.floor(py / cellHeight)))
-  return { x: (col + 0.5) * cellWidth, y: (row + 0.5) * cellHeight }
+  const col = Math.max(0, Math.min(cols - 1, findIndex(colX, px)))
+  const row = Math.max(0, Math.min(rows - 1, findIndex(rowY, py)))
+  const cx = colX[col] + (colX[col + 1] - colX[col]) / 2
+  const cy = rowY[row] + (rowY[row + 1] - rowY[row]) / 2
+  return { x: cx, y: cy }
 }
 
 // Drag and drop functions
@@ -1117,14 +1244,11 @@ const onDrop = (event) => {
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const canvasWidth = canvasRect.width
   const canvasHeight = canvasRect.height
+  const { cols, rows, colX, rowY, colWidths, rowHeights, gridW, gridH } = gridMetrics.value
 
   // Get drop position relative to canvas
   const x = event.clientX - canvasRect.left
   const y = event.clientY - canvasRect.top
-
-  // Calculate cell dimensions in pixels
-  const cellWidth = canvasWidth / gridColumns.value
-  const cellHeight = canvasHeight / gridRows.value
 
   // Decide size multiplier.
   // - SVG assets use the existing 1x/2x control (and Star is forced 2x)
@@ -1145,27 +1269,74 @@ const onDrop = (event) => {
   const snappedX = snapAnchor.x
   const snappedY = snapAnchor.y
 
+  // Helpers to map from a snapped coordinate to the underlying cell index.
+  const findCellIndex = (prefix, v) => {
+    let lo = 0
+    let hi = prefix.length - 2
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (v < prefix[mid]) hi = mid - 1
+      else if (v >= prefix[mid + 1]) lo = mid + 1
+      else return mid
+    }
+    return Math.max(0, Math.min(prefix.length - 2, lo))
+  }
+
+  // Determine which grid cell the 1× asset is centered in.
+  const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedX)))
+  const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedY)))
+
+  // For 2× assets, snappedX/Y are intersections. Choose the top-left cell
+  // for the 2× block (clamped so the 2× block stays on the grid).
+  const tlCol = Math.max(
+    0,
+    Math.min(cols - 2, findCellIndex(colX, snappedX) - (snappedX === colX[cols] ? 1 : 0)),
+  )
+  const tlRow = Math.max(
+    0,
+    Math.min(rows - 2, findCellIndex(rowY, snappedY) - (snappedY === rowY[rows] ? 1 : 0)),
+  )
+
+  const spanW = (fromCol, span) => {
+    let w = 0
+    for (let i = 0; i < span; i++) w += colWidths[fromCol + i] || 0
+    return w
+  }
+  const spanH = (fromRow, span) => {
+    let h = 0
+    for (let i = 0; i < span; i++) h += rowHeights[fromRow + i] || 0
+    return h
+  }
+
   // Render size:
   // - SVG assets: grid-based square (cellWidth * multiplier)
   // - Uploaded images: width is grid-based; height is derived from natural
   //   image ratio (when available) to avoid distortion.
-  const currentAssetSize = Math.round(cellWidth * forcedCurrentMultiplier)
+  // Render size (SVG assets): must match the actual grid area it occupies.
+  // 1× => exactly the cell's width/height.
+  // 2× => sum of two columns + two rows starting at top-left cell.
+  // (We keep uploaded images behavior unchanged.)
+  const assetSpan = forcedCurrentMultiplier > 1 ? 2 : 1
+  const svgRenderW = assetSpan === 1 ? colWidths[cellCol] || 1 : spanW(tlCol, 2)
+  const svgRenderH = assetSpan === 1 ? rowHeights[cellRow] || 1 : spanH(tlRow, 2)
+
   const renderW =
     dragged && dragged.isUploaded
-      ? Math.round(dragged.renderW || currentAssetSize)
-      : currentAssetSize
+      ? Math.round(dragged.renderW || svgRenderW)
+      : Math.round(svgRenderW)
+
   const renderH = (() => {
-    if (!(dragged && dragged.isUploaded)) return currentAssetSize
+    if (!(dragged && dragged.isUploaded)) return Math.round(svgRenderH)
     if (dragged.renderH) return Math.round(dragged.renderH)
     const nw = Number(dragged.naturalW || 0)
     const nh = Number(dragged.naturalH || 0)
     if (nw > 0 && nh > 0) return Math.round(renderW * (nh / nw))
-    return currentAssetSize
+    return Math.round(svgRenderH)
   })()
   // Only apply horizontal asset-specific offset for 1x assets — larger
   // multipliers may amplify the offset too much (Half Circle padding fix).
-  const dropOffsetX = (currentMultiplier === 1 ? dragged.offsetX || 0 : 0) * currentAssetSize
-  const dropOffsetY = (dragged.offsetY || 0) * currentAssetSize
+  const dropOffsetX = (currentMultiplier === 1 ? dragged.offsetX || 0 : 0) * renderW
+  const dropOffsetY = (dragged.offsetY || 0) * renderH
 
   // Compute top-left.
   // - Uploaded images: always snap top-left to intersections.
@@ -1177,11 +1348,13 @@ const onDrop = (event) => {
     finalX = snappedX
     finalY = snappedY
   } else if (forcedCurrentMultiplier > 1) {
-    finalX = snappedX
-    finalY = snappedY
+    // 2× assets top-left sits on the snapped intersection.
+    finalX = colX[tlCol]
+    finalY = rowY[tlRow]
   } else {
-    finalX = snappedX - currentAssetSize / 2
-    finalY = snappedY - currentAssetSize / 2
+    // 1× assets are centered on the cell center.
+    finalX = colX[cellCol]
+    finalY = rowY[cellRow]
   }
 
   // Apply asset-specific offsets (fractions of asset size)
@@ -1192,8 +1365,10 @@ const onDrop = (event) => {
   // placement and small negative values caused by tiny offsets (like -0.001)
   finalX = Math.round(finalX)
   finalY = Math.round(finalY)
-  finalX = Math.max(0, Math.min(finalX, canvasWidth - renderW))
-  finalY = Math.max(0, Math.min(finalY, canvasHeight - renderH))
+  // Clamp to the effective grid area (gridW/gridH) since that's what the
+  // overlay + snapping are based on.
+  finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+  finalY = Math.max(0, Math.min(finalY, gridH - renderH))
 
   // snap calculations executed
   // record state before adding new asset so Ctrl+Z can undo
@@ -1259,11 +1434,38 @@ const spawnAssetCentered = (asset) => {
       canvasHeight,
       currentMultiplier,
     )
-    const cellWidth = canvasWidth / gridColumns.value
-    const cellHeight = canvasHeight / Math.max(1, gridRows.value)
-    const currentAssetSize = Math.round(cellWidth * currentMultiplier)
-    const dropOffsetX = (currentMultiplier === 1 ? asset.offsetX || 0 : 0) * currentAssetSize
-    const dropOffsetY = (asset.offsetY || 0) * currentAssetSize
+
+    // Use the shared grid metrics so sizes match overlay + snapping.
+    const { cols, rows, colX, rowY, colWidths, rowHeights, gridW, gridH } = gridMetrics.value
+    const findCellIndex = (prefix, v) => {
+      let lo = 0
+      let hi = prefix.length - 2
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        if (v < prefix[mid]) hi = mid - 1
+        else if (v >= prefix[mid + 1]) lo = mid + 1
+        else return mid
+      }
+      return Math.max(0, Math.min(prefix.length - 2, lo))
+    }
+
+    const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapAnchor.x)))
+    const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapAnchor.y)))
+    const tlCol = Math.max(0, Math.min(cols - 2, findCellIndex(colX, snapAnchor.x)))
+    const tlRow = Math.max(0, Math.min(rows - 2, findCellIndex(rowY, snapAnchor.y)))
+
+    const currentMultiplierClamped = currentMultiplier > 1 ? 2 : 1
+    const renderW =
+      currentMultiplierClamped === 1
+        ? colWidths[cellCol] || 1
+        : (colWidths[tlCol] || 0) + (colWidths[tlCol + 1] || 0)
+    const renderH =
+      currentMultiplierClamped === 1
+        ? rowHeights[cellRow] || 1
+        : (rowHeights[tlRow] || 0) + (rowHeights[tlRow + 1] || 0)
+
+    const dropOffsetX = (currentMultiplier === 1 ? asset.offsetX || 0 : 0) * renderW
+    const dropOffsetY = (asset.offsetY || 0) * renderH
 
     let finalX, finalY
     if (asset && asset.isUploaded) {
@@ -1272,17 +1474,18 @@ const spawnAssetCentered = (asset) => {
       finalY = Math.round(snapAnchor.y + dropOffsetY)
     } else if (currentMultiplier > 1) {
       // Grid-aligned block
-      finalX = Math.round(snapAnchor.x + dropOffsetX)
-      finalY = Math.round(snapAnchor.y + dropOffsetY)
+      finalX = Math.round(colX[tlCol] + dropOffsetX)
+      finalY = Math.round(rowY[tlRow] + dropOffsetY)
     } else {
-      // 1× SVG: anchor is cell center -> center asset
-      finalX = Math.round(snapAnchor.x - currentAssetSize / 2 + dropOffsetX)
-      finalY = Math.round(snapAnchor.y - currentAssetSize / 2 + dropOffsetY)
+      // 1× SVG: occupy exactly one cell
+      finalX = Math.round(colX[cellCol] + dropOffsetX)
+      finalY = Math.round(rowY[cellRow] + dropOffsetY)
     }
 
     // Clamp so the asset remains at least partially visible inside canvas
-    finalX = Math.max(0, Math.min(finalX, canvasWidth - currentAssetSize))
-    finalY = Math.max(0, Math.min(finalY, canvasHeight - currentAssetSize))
+    // Clamp to effective grid bounds (matches overlay + snapping)
+    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
 
     pushHistory()
     const newItem = {
@@ -1292,6 +1495,7 @@ const spawnAssetCentered = (asset) => {
       rotation: 0,
       id: Date.now(),
       multiplier: currentMultiplier,
+      ...(asset && asset.isUploaded ? { renderW, renderH } : {}),
     }
     // Uploaded raster images always go under assets
     if (newItem.isUploaded) backgroundImages.value.push(newItem)
@@ -1845,8 +2049,8 @@ const onCanvasMouseMove = (event) => {
   // Use the rendered canvas width to derive the cell width; keep cells
   // square by making height equal to width. This avoids mixing preset-based
   // sizes with rendered sizes which caused snapping mismatches.
-  const cellWidth = canvasWidth / gridColumns.value
-  const cellHeight = canvasHeight / Math.max(1, gridRows.value)
+  // NOTE: We intentionally do NOT use uniform cellWidth/cellHeight here.
+  // All snapping must follow the remainder-distributed gridMetrics.
 
   // Compute a snapped anchor.
   // - 1x assets: cell center
@@ -1864,8 +2068,9 @@ const onCanvasMouseMove = (event) => {
   // Clamp snapped anchor to canvas bounds so out-of-canvas pointers don't
   // produce anchors outside the visible grid (helps when dragging slightly
   // outside the canvas to the left/top/right/bottom).
-  const clampedSnappedX = Math.max(0, Math.min(snappedX, canvasWidth))
-  const clampedSnappedY = Math.max(0, Math.min(snappedY, canvasHeight))
+  const { gridW, gridH } = gridMetrics.value
+  const clampedSnappedX = Math.max(0, Math.min(snappedX, gridW))
+  const clampedSnappedY = Math.max(0, Math.min(snappedY, gridH))
   lastSnap.value = { x: clampedSnappedX, y: clampedSnappedY }
 
   // Determine this asset's effective size (compute from multiplier so it
@@ -2055,13 +2260,10 @@ const onCanvasMouseUp = (event) => {
       // Measure canvas now so drop offsets can be computed from the
       // current rendered size (avoid referencing uninitialized canvasRect).
       const canvasRectNow = canvasRef.value.getBoundingClientRect()
-      const dropOffsetX =
-        (currentAssetSize ===
-          Math.round((canvasRectNow.width / gridColumns.value) * assetMultiplier.value) &&
-        assetMultiplier.value === 1
-          ? asset.offsetX || 0
-          : 0) * currentAssetSize
-      const dropOffsetY = (asset.offsetY || 0) * currentAssetSize
+      const r = getAssetPixelRect(asset)
+      // Only apply horizontal asset-specific offset for 1x assets.
+      const dropOffsetX = (assetMultiplier.value === 1 ? asset.offsetX || 0 : 0) * (r.w || 0)
+      const dropOffsetY = (asset.offsetY || 0) * (r.h || 0)
       let pointerX = event ? event.clientX - canvasRectNow.left : null
       let pointerY = event ? event.clientY - canvasRectNow.top : null
       // Clamp pointer to canvas bounds for snap calculations so we don't
@@ -2091,32 +2293,47 @@ const onCanvasMouseUp = (event) => {
         )
       }
 
+      // Use the same remainder-distributed grid metrics used by overlay/drop.
+      const metrics = gridMetrics.value
+      const colX = metrics?.colX || []
+      const rowY = metrics?.rowY || []
+      const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasRectNow.width
+      const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasRectNow.height
+
       // Treat snapAnchor differently for assets sized 1x: align to the
       // containing cell top-left so the 1x asset occupies a single cell.
-      const cellWidthNow = canvasRectNow.width / gridColumns.value
-      const cellHeightNow = canvasRectNow.height / Math.max(1, gridRows.value)
       let snappedTopLeftX, snappedTopLeftY
       if (currentMultiplier === 1) {
         // Center the 1x asset in its target cell.
         snappedTopLeftX = snapAnchor.x - currentAssetSize / 2
         snappedTopLeftY = snapAnchor.y - currentAssetSize / 2
       } else {
-        // Uploaded images: for any multiplier > 1, snap TOP-LEFT to a grid
-        // intersection so the image occupies whole squares (e.g. 3x3).
-        if (asset.isUploaded) {
-          const maxCol = Math.max(0, gridColumns.value - currentMultiplier)
-          const maxRow = Math.max(0, gridRows.value - currentMultiplier)
-          let col = Math.round(snapAnchor.x / cellWidthNow)
-          let row = Math.round(snapAnchor.y / cellHeightNow)
-          col = Math.max(0, Math.min(maxCol, col))
-          row = Math.max(0, Math.min(maxRow, row))
-          snappedTopLeftX = col * cellWidthNow
-          snappedTopLeftY = row * cellHeightNow
-        } else {
-          // 2x SVG assets: anchor is an intersection, so place top-left on it
-          snappedTopLeftX = snapAnchor.x
-          snappedTopLeftY = snapAnchor.y
+        // For any multiplier > 1, snap TOP-LEFT to a grid intersection.
+        // Note: snapAnchor is already computed using gridMetrics (prefix sums).
+        snappedTopLeftX = snapAnchor.x
+        snappedTopLeftY = snapAnchor.y
+
+        // Clamp to the effective grid bounds so the asset stays within grid area.
+        // Snap intersections include the final boundary, so we clamp by the span.
+        const maxCol = Math.max(0, gridColumns.value - currentMultiplier)
+        const maxRow = Math.max(0, gridRows.value - currentMultiplier)
+        let col = 0
+        let row = 0
+        if (colX.length) {
+          // Find nearest intersection index for x.
+          for (let i = 0; i < colX.length; i++) {
+            if (colX[i] <= snappedTopLeftX) col = i
+          }
         }
+        if (rowY.length) {
+          for (let i = 0; i < rowY.length; i++) {
+            if (rowY[i] <= snappedTopLeftY) row = i
+          }
+        }
+        col = Math.max(0, Math.min(maxCol, col))
+        row = Math.max(0, Math.min(maxRow, row))
+        snappedTopLeftX = colX[col] ?? Math.max(0, Math.min(snappedTopLeftX, gridW))
+        snappedTopLeftY = rowY[row] ?? Math.max(0, Math.min(snappedTopLeftY, gridH))
       }
       const candidateX = snappedTopLeftX + dropOffsetX
       const candidateY = snappedTopLeftY + dropOffsetY
@@ -2137,7 +2354,8 @@ const onCanvasMouseUp = (event) => {
         const dyp = distY - snapAnchor.y
         pointerDist = Math.hypot(dxp, dyp)
         // tolerance: snap when pointer is reasonably close to the snap anchor
-        const cellWidthNow = canvasRectNow.width / gridColumns.value
+        const cellWidthNow =
+          gridMetrics.value?.colWidths?.[0] ?? canvasRectNow.width / gridColumns.value
         snapTolerance = Math.max(
           8,
           Math.min(currentAssetSize * 0.8, Math.max(cellWidthNow || 0, currentAssetSize * 0.5)),
@@ -2242,28 +2460,64 @@ const assetSize = computed(() => {
   return cellWidth
 })
 
-// Return the current rendered pixel size for a placed asset.
-// This uses the asset's stored multiplier (grid units) and the current
-// rendered canvas width so placed assets scale when the grid/canvas size
-// changes. Falls back to asset.size or global assetSize if necessary.
-const getAssetPixelSize = (asset) => {
+// Return the current rendered pixel rect for a placed asset.
+// For SVG tiles we must match the remainder-distributed grid in BOTH
+// width and height (cells may differ by 1px).
+const getAssetPixelRect = (asset) => {
   try {
-    if (!canvasRef.value) return asset.size || assetSize.value
-    const canvasRect = canvasRef.value.getBoundingClientRect()
-    if (!canvasRect || canvasRect.width === 0) return asset.size || assetSize.value
-    const cellWidthNow = canvasRect.width / gridColumns.value
-    // If the asset explicitly stores a multiplier (grid units), use that so
-    // the asset scales with the grid. If it's an older asset that only stored
-    // an absolute pixel size, preserve that size.
-    if (asset.multiplier || asset.multiplier === 0) {
-      const mult = asset.multiplier || 1
-      return Math.round(cellWidthNow * mult)
+    // Uploaded images have their own renderW/renderH sizing.
+    if (asset && asset.isUploaded) {
+      const w = Math.round(asset.renderW || asset.size || assetSize.value)
+      const h = Math.round(asset.renderH || asset.size || assetSize.value)
+      return { w, h }
     }
-    if (asset.size) return asset.size
-    return assetSize.value
+
+    if (!canvasRef.value) {
+      const s = Math.round(asset.size || assetSize.value)
+      return { w: s, h: s }
+    }
+    const { cols, rows, colWidths, rowHeights } = gridMetrics.value
+
+    // For PNG/JPG (uploaded) we bail out above. For SVG assets we must
+    // match the remainder-distributed grid.
+    const mult = asset.multiplier || 1
+    const span = mult > 1 ? 2 : 1
+
+    // If we have a stored x/y, infer the cell from the overlay grid.
+    const x = Number(asset.x || 0)
+    const y = Number(asset.y || 0)
+    const { colX, rowY } = gridMetrics.value
+    const findCellIndex = (prefix, v) => {
+      let lo = 0
+      let hi = prefix.length - 2
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        if (v < prefix[mid]) hi = mid - 1
+        else if (v >= prefix[mid + 1]) lo = mid + 1
+        else return mid
+      }
+      return Math.max(0, Math.min(prefix.length - 2, lo))
+    }
+
+    const col = Math.max(0, Math.min(cols - span, findCellIndex(colX, x)))
+    const row = Math.max(0, Math.min(rows - span, findCellIndex(rowY, y)))
+
+    const w = span === 1 ? colWidths[col] || 1 : (colWidths[col] || 0) + (colWidths[col + 1] || 0)
+    const h =
+      span === 1 ? rowHeights[row] || 1 : (rowHeights[row] || 0) + (rowHeights[row + 1] || 0)
+
+    return { w: Math.round(w), h: Math.round(h) }
   } catch (e) {
-    return asset.size || assetSize.value
+    const s = Math.round(asset?.size || assetSize.value)
+    return { w: s, h: s }
   }
+}
+
+// Legacy helper: some call sites still expect a single size.
+// Keep returning the max so anything square-based remains safe.
+const getAssetPixelSize = (asset) => {
+  const r = getAssetPixelRect(asset)
+  return Math.round(Math.max(r.w || 0, r.h || 0))
 }
 
 // Watch for grid / canvas dimension changes and remove placed assets that
@@ -2292,20 +2546,33 @@ watch(
       _gridResizeRaf.id = 0
       try {
         if (!canvasRef.value) return
-        const canvasRect = canvasRef.value.getBoundingClientRect()
-        const canvasWidth = canvasRect.width
-        const canvasHeight = canvasRect.height
+        const {
+          cols: colsNow,
+          rows: rowsNow,
+          colX,
+          rowY,
+          colWidths,
+          rowHeights,
+          gridW,
+          gridH,
+        } = gridMetrics.value
 
-        const colsNow = gridColumns.value
-        const rowsNow = gridRows.value
-        const cellWNow = canvasWidth / Math.max(1, colsNow)
-        const cellHNow = canvasHeight / Math.max(1, rowsNow)
-
-        // Previous grid (fallback to current if unavailable)
+        // Previous grid (fallback to current if unavailable).
+        // We only use the indices (col/row) from prev; actual pixel placement uses *current* gridMetrics.
         const prevCols = Array.isArray(prev) ? Number(prev[0]) || colsNow : colsNow
         const prevRows = Array.isArray(prev) ? Number(prev[1]) || rowsNow : rowsNow
-        const cellWPrev = canvasWidth / Math.max(1, prevCols)
-        const cellHPrev = canvasHeight / Math.max(1, prevRows)
+
+        const findCellIndex = (prefix, v) => {
+          let lo = 0
+          let hi = prefix.length - 2
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1
+            if (v < prefix[mid]) hi = mid - 1
+            else if (v >= prefix[mid + 1]) lo = mid + 1
+            else return mid
+          }
+          return Math.max(0, Math.min(prefix.length - 2, lo))
+        }
 
         // Mutate positions in-place (preserves object identity).
         const repositionInPlace = (list) => {
@@ -2316,23 +2583,20 @@ watch(
             if (asset.renderW && asset.renderH) continue
 
             const mult = asset.multiplier || 1
-            const sizePrev = Math.round(cellWPrev * mult)
+            const span = mult > 1 ? 2 : 1
 
-            // Determine which cell the asset belongs to based on its CENTER.
-            const centerXPrev = (Number(asset.x || 0) || 0) + sizePrev / 2
-            const centerYPrev = (Number(asset.y || 0) || 0) + sizePrev / 2
+            // Determine which cell the asset belongs to based on its current TOP-LEFT.
+            // This matches how we store SVG tiles (x/y are cell top-left for 1x, intersection for 2x).
+            const left = Number(asset.x || 0) || 0
+            const top = Number(asset.y || 0) || 0
 
-            const col = Math.max(0, Math.min(prevCols - 1, Math.floor(centerXPrev / cellWPrev)))
-            const row = Math.max(0, Math.min(prevRows - 1, Math.floor(centerYPrev / cellHPrev)))
+            let col = findCellIndex(colX, left)
+            let row = findCellIndex(rowY, top)
+            col = Math.max(0, Math.min(colsNow - span, col))
+            row = Math.max(0, Math.min(rowsNow - span, row))
 
-            const sizeNow = Math.round(cellWNow * mult)
-
-            // New anchor in the new grid
-            const anchorX = mult > 1 ? col * cellWNow : (col + 0.5) * cellWNow
-            const anchorY = mult > 1 ? row * cellHNow : (row + 0.5) * cellHNow
-
-            const nextX = Math.round(mult > 1 ? anchorX : anchorX - sizeNow / 2)
-            const nextY = Math.round(mult > 1 ? anchorY : anchorY - sizeNow / 2)
+            const nextX = Math.round(colX[col])
+            const nextY = Math.round(rowY[row])
 
             if (asset.x !== nextX || asset.y !== nextY) {
               asset.x = nextX
@@ -2347,11 +2611,17 @@ watch(
           if (!asset) return false
           if (asset.renderW && asset.renderH) return true
           const mult = asset.multiplier || 1
-          const w = Math.round(cellWNow * mult)
-          const h = Math.round(cellHNow * mult)
+          const span = mult > 1 ? 2 : 1
           const left = Number(asset.x || 0) || 0
           const top = Number(asset.y || 0) || 0
-          return left >= 0 && top >= 0 && left + w <= canvasWidth && top + h <= canvasHeight
+
+          const col = Math.max(0, Math.min(colsNow - span, findCellIndex(colX, left)))
+          const row = Math.max(0, Math.min(rowsNow - span, findCellIndex(rowY, top)))
+          const w =
+            span === 1 ? colWidths[col] || 1 : (colWidths[col] || 0) + (colWidths[col + 1] || 0)
+          const h =
+            span === 1 ? rowHeights[row] || 1 : (rowHeights[row] || 0) + (rowHeights[row + 1] || 0)
+          return left >= 0 && top >= 0 && left + w <= gridW && top + h <= gridH
         }
 
         const beforePlaced = placedAssets.value.length
@@ -2761,12 +3031,80 @@ const downloadBlob = (blob, filename) => {
   URL.revokeObjectURL(url)
 }
 
+// Prefer a real OS-level "Save as" dialog when supported (Chromium).
+// Falls back to the regular download attribute approach in Safari/Firefox.
+const saveBlobWithDialog = async (blob, opts) => {
+  const suggestedName =
+    (opts && opts.suggestedName) || `${currentCanvasPreset.value?.name || 'canvas'}`
+  const fallbackFilename = (opts && opts.fallbackFilename) || suggestedName
+  const types = (opts && opts.types) || undefined
+
+  try {
+    if (typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function') {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types,
+        // Keep compatibility: in some environments this option isn't implemented.
+        excludeAcceptAllOption: false,
+      })
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return true
+    }
+  } catch (e) {
+    // If the user cancels the dialog, just do nothing.
+    if (e && (e.name === 'AbortError' || e.code === 20)) return false
+    console.warn('showSaveFilePicker failed, falling back to download', e)
+  }
+
+  downloadBlob(blob, fallbackFilename)
+  return true
+}
+
+const getDefaultExportBaseName = () => {
+  const preset = String(currentCanvasPreset.value?.name || 'canvas')
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(
+    d.getHours(),
+  )}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`
+  return `${preset}-${stamp}`
+}
+
+const sanitizeFilenameBase = (name) => {
+  const s = String(name || '').trim()
+  if (!s) return ''
+  return s
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.\s]+$/g, '')
+}
+
+const buildSuggestedName = (ext, baseOverride = '') => {
+  const base = sanitizeFilenameBase(baseOverride) || getDefaultExportBaseName()
+  const safeExt = String(ext || '').replace(/^\./, '')
+  return safeExt ? `${base}.${safeExt}` : base
+}
+
 const exportAsSVG = async () => {
   // Use the async builder to inline assets so the resulting SVG is self-contained.
   const svgString = await getExportSVGStringAsync()
   if (!svgString) return
   const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
-  downloadBlob(blob, `${currentCanvasPreset.value.name || 'canvas'}.svg`)
+  const name = buildSuggestedName('svg')
+  await saveBlobWithDialog(blob, {
+    suggestedName: name,
+    fallbackFilename: name,
+    types: [
+      {
+        description: 'SVG',
+        accept: { 'image/svg+xml': ['.svg'] },
+      },
+    ],
+  })
 }
 
 // Export scale (supersampling): higher = sharper edges + better raster quality.
@@ -2825,7 +3163,17 @@ const exportAsPNG = async () => {
   // convert dataURL to blob
   const res = await fetch(dataUrl)
   const blob = await res.blob()
-  downloadBlob(blob, `${currentCanvasPreset.value.name || 'canvas'}.png`)
+  const name = buildSuggestedName('png')
+  await saveBlobWithDialog(blob, {
+    suggestedName: name,
+    fallbackFilename: name,
+    types: [
+      {
+        description: 'PNG',
+        accept: { 'image/png': ['.png'] },
+      },
+    ],
+  })
 }
 
 const exportAsJPG = async () => {
@@ -2833,7 +3181,17 @@ const exportAsJPG = async () => {
   if (!dataUrl) return
   const res = await fetch(dataUrl)
   const blob = await res.blob()
-  downloadBlob(blob, `${currentCanvasPreset.value.name || 'canvas'}.jpg`)
+  const name = buildSuggestedName('jpg')
+  await saveBlobWithDialog(blob, {
+    suggestedName: name,
+    fallbackFilename: name,
+    types: [
+      {
+        description: 'JPEG',
+        accept: { 'image/jpeg': ['.jpg', '.jpeg'] },
+      },
+    ],
+  })
 }
 
 const exportAsPDF = async () => {
@@ -2855,8 +3213,18 @@ const exportAsPDF = async () => {
     // Add the image covering the full page
     pdf.addImage(dataUrl, 'JPEG', 0, 0, exportW, exportH)
 
-    const filename = `${currentCanvasPreset.value.name || 'canvas'}.pdf`
-    pdf.save(filename)
+    const blob = pdf.output('blob')
+    const name = buildSuggestedName('pdf')
+    await saveBlobWithDialog(blob, {
+      suggestedName: name,
+      fallbackFilename: name,
+      types: [
+        {
+          description: 'PDF',
+          accept: { 'application/pdf': ['.pdf'] },
+        },
+      ],
+    })
   } catch (e) {
     console.error('exportAsPDF failed', e)
     // Fallback: open print window if PDF generation fails
@@ -3503,8 +3871,8 @@ const randomizePattern = () => {
   <div class="w-full h-screen maingrid">
     <!-- UI Section -->
     <div class="bg-white m-1 sidebar">
-      <h1 class="font-object font-bold text-xl ml-3 mb-4 mt-1">Stupid Generator</h1>
-      <div class="ml-3 mt-3 toggle-container font-object font-regular">
+      <h1 class="font-object font-bold text-xl mb-2 mt-1">Stupid Generator</h1>
+      <div class="mt-2 toggle-container font-object font-regular">
         <div class="mode-toggle" role="tablist" aria-label="Mode">
           <button
             type="button"
@@ -3525,7 +3893,7 @@ const randomizePattern = () => {
         </div>
       </div>
 
-      <div class="ml-3 mt-8">
+      <div class="mt-6">
         <div class="font-object font-medium text-base">Canvas presets</div>
         <div ref="presetDropdownRef" class="preset-dropdown w-[95%]">
           <button
@@ -3601,7 +3969,7 @@ const randomizePattern = () => {
           </div>
         </div>
 
-        <h2 class="font-object font-medium text-base mt-10">Colors</h2>
+        <h2 class="font-object font-medium text-base mt-8">Colors</h2>
         <p class="font-object text-xs mb-2 text-gray-500">Click to change colors, and to invert.</p>
         <div class="color-presets">
           <button
@@ -3694,7 +4062,7 @@ const randomizePattern = () => {
 
         <!-- Sandbox-only UI: assets palette + pattern randomizer -->
         <div v-if="editorMode === 'sandbox'">
-          <h2 class="font-object font-medium text-base mt-10">Assets</h2>
+          <h2 class="font-object font-medium text-base mt-8">Assets</h2>
           <p class="font-object text-xs mb-4 text-gray-500">
             Click to spawn centered. Drag to move.
           </p>
@@ -3705,7 +4073,7 @@ const randomizePattern = () => {
             Pattern Randomizer
           </button>
           <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
-          <div class="flex gap-2 mb-4 w-[95%] items-center">
+          <div class="flex gap-2 mb-2 w-[95%] items-center">
             <button
               @click="changeAssetSize(1)"
               :class="[
@@ -3729,7 +4097,7 @@ const randomizePattern = () => {
               class="btn btn--sm font-object font-regular px-2 border-2 rounded cursor-pointer flex-1"
               @click.prevent="openUploadSvgPicker"
             >
-              + Upload asset
+              + Upload asset SVG
             </button>
           </div>
           <div class="assets-container grid grid-cols-4 mb-4">
@@ -3782,7 +4150,7 @@ const randomizePattern = () => {
             + Upload SVG
           </button>
 
-          <h2 class="font-object font-medium text-base mt-10">Upload image background</h2>
+          <h2 class="font-object font-medium text-base mt-8">Upload image background</h2>
           <p class="font-object text-xs mb-3 text-gray-500">
             Upload an image that replaces the background. Click to upload, then
             <strong>hold alt/option down and drag to move.</strong>
@@ -3826,7 +4194,7 @@ const randomizePattern = () => {
             />
           </div>
 
-          <h2 class="font-object font-medium text-base mt-10">Controls</h2>
+          <h2 class="font-object font-medium text-base mt-8">Controls</h2>
 
           <button
             class="btn btn--sm ont-object font-regular p-1 border-2 rounded cursor-pointer w-[95%] mt-1 mb-2"
@@ -3972,14 +4340,14 @@ const randomizePattern = () => {
         </div>
       </div>
       <!-- Uploaded images section (sandbox only) -->
-      <div v-if="editorMode === 'sandbox'" class="ml-3 mt-4">
-        <h2 class="font-object font-medium text-base mt-10">Upload image</h2>
+      <div v-if="editorMode === 'sandbox'" class="mt-4">
+        <h2 class="font-object font-medium text-base mt-8">Upload image</h2>
         <p class="font-object text-xs mb-3 text-gray-500">
           Click to upload, click to add, <strong>hold alt/option down and drag to move.</strong>
         </p>
 
         <p class="font-object text-xs mb-2 text-gray-900">Chose size</p>
-        <div class="flex gap-2 mb-4 items-center w-[95%]">
+        <div class="flex gap-2 mb-2 items-center w-[95%]">
           <button
             @click="changeBackgroundImageSize(1)"
             :class="[
@@ -4055,16 +4423,16 @@ const randomizePattern = () => {
           </div>
         </div>
       </div>
-      <div class="ml-3 mt-8">
-        <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
+      <div class="mt-6">
+        <h2 class="font-object font-medium text-base mt-8 mb-2">Save as</h2>
         <div class="mb-2">
-          <label class="font-object text-xs block mb-1  text-gray-500">Export quality</label>
+          <label class="font-object text-xs block mb-1 text-gray-500">Export quality</label>
           <select v-model.number="exportScale" class="select w-full">
             <option :value="2">Standard</option>
             <option :value="3">High quality</option>
           </select>
         </div>
-        <div class="flex gap-2 my-4">
+        <div class="flex gap-2 my-2">
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPNG">PNG</button>
@@ -4211,8 +4579,8 @@ const randomizePattern = () => {
                     background: selectedAssetColor,
                     WebkitMaskImage: `url(${img.dataUrl || img.path})`,
                     maskImage: `url(${img.dataUrl || img.path})`,
-                    WebkitMaskSize: 'contain',
-                    maskSize: 'contain',
+                    WebkitMaskSize: '100% 100%',
+                    maskSize: '100% 100%',
                     WebkitMaskRepeat: 'no-repeat',
                     maskRepeat: 'no-repeat',
                     WebkitMaskPosition: 'center',
@@ -4268,13 +4636,13 @@ const randomizePattern = () => {
               :style="{
                 left: asset.x + 'px',
                 top: asset.y + 'px',
-                width: getAssetPixelSize(asset) + 'px',
-                height: getAssetPixelSize(asset) + 'px',
+                width: getAssetPixelRect(asset).w + 'px',
+                height: getAssetPixelRect(asset).h + 'px',
                 background: asset.color || selectedAssetColor,
                 WebkitMaskImage: `url(${asset.path})`,
                 maskImage: `url(${asset.path})`,
-                WebkitMaskSize: 'contain',
-                maskSize: 'contain',
+                WebkitMaskSize: '100% 100%',
+                maskSize: '100% 100%',
                 WebkitMaskRepeat: 'no-repeat',
                 maskRepeat: 'no-repeat',
                 WebkitMaskPosition: 'center',
