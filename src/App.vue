@@ -404,6 +404,41 @@ const onSelectCanvasPresetName = (name) => {
   currentCanvasPreset.value = selectedPreset
   closePresetDropdown()
 }
+
+// Custom canvas size inputs (only used when preset === 'Custom')
+const customCanvasW = ref(canvasDimensions.find((p) => p.name === 'Custom')?.width || 1000)
+const customCanvasH = ref(canvasDimensions.find((p) => p.name === 'Custom')?.height || 1000)
+
+// Keep inputs in sync when switching presets.
+watch(
+  () => currentCanvasPreset.value?.name,
+  (name) => {
+    if (name !== 'Custom') return
+    customCanvasW.value = Number(currentCanvasPreset.value?.width || customCanvasW.value) || 1000
+    customCanvasH.value = Number(currentCanvasPreset.value?.height || customCanvasH.value) || 1000
+  },
+)
+
+const clampCanvasSize = (v) => {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return null
+  // Reasonable bounds so the UI and export doesn't blow up
+  return Math.max(200, Math.min(8000, n))
+}
+
+const applyCustomCanvasSize = () => {
+  if (currentCanvasPreset.value?.name !== 'Custom') return
+  const w = clampCanvasSize(customCanvasW.value)
+  const h = clampCanvasSize(customCanvasH.value)
+  if (!w || !h) return
+  pushHistory()
+  currentCanvasPreset.value = {
+    ...currentCanvasPreset.value,
+    name: 'Custom',
+    width: w,
+    height: h,
+  }
+}
 const gridSize = ref(5)
 const placedAssets = ref([]) // Array to store placed assets on canvas
 // Uploaded images placed on the canvas should always sit UNDER the SVG assets.
@@ -3500,8 +3535,13 @@ const randomizePattern = () => {
             aria-haspopup="listbox"
             @click.prevent="togglePresetDropdown"
           >
-            {{ currentCanvasPreset.name }} ({{ currentCanvasPreset.width }} x
-            {{ currentCanvasPreset.height }}px)
+            <template v-if="currentCanvasPreset.name === 'Custom'">{{
+              currentCanvasPreset.name
+            }}</template>
+            <template v-else>
+              {{ currentCanvasPreset.name }} ({{ currentCanvasPreset.width }} x
+              {{ currentCanvasPreset.height }}px)
+            </template>
           </button>
 
           <div v-if="presetDropdownOpen" class="preset-dropdown__menu" role="listbox">
@@ -3515,8 +3555,41 @@ const randomizePattern = () => {
               :aria-selected="preset.name === currentCanvasPreset.name ? 'true' : 'false'"
               @click.prevent="onSelectCanvasPresetName(preset.name)"
             >
-              {{ preset.name }} ({{ preset.width }} x {{ preset.height }}px)
+              <template v-if="preset.name === 'Custom'">{{ preset.name }}</template>
+              <template v-else
+                >{{ preset.name }} ({{ preset.width }} x {{ preset.height }}px)</template
+              >
             </button>
+          </div>
+        </div>
+
+        <!-- Custom preset size inputs -->
+        <div v-if="currentCanvasPreset.name === 'Custom'" class="mt-3 w-[95%]">
+          <div class="flex gap-2 items-end">
+            <label class="font-object text-xs flex-1">
+              W
+              <input
+                type="number"
+                min="200"
+                max="8000"
+                step="1"
+                class="custom-size-input w-full"
+                v-model.number="customCanvasW"
+                @change="applyCustomCanvasSize"
+              />
+            </label>
+            <label class="font-object text-xs flex-1">
+              H
+              <input
+                type="number"
+                min="200"
+                max="8000"
+                step="1"
+                class="custom-size-input w-full"
+                v-model.number="customCanvasH"
+                @change="applyCustomCanvasSize"
+              />
+            </label>
           </div>
         </div>
 
@@ -4228,4 +4301,34 @@ const randomizePattern = () => {
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.custom-size-input {
+  width: 100%;
+  border: 2px solid #e5e7eb; /* tailwind gray-200-ish */
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background: white;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  /* Remove any native dropdown/appearance styling */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.custom-size-input:focus {
+  outline: none;
+  border-color: #9ca3af; /* gray-400 */
+}
+
+/* Hide number spinners (the screenshot's arrows) */
+.custom-size-input::-webkit-outer-spin-button,
+.custom-size-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.custom-size-input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+</style>
