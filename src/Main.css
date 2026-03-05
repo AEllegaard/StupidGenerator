@@ -630,12 +630,20 @@ body {
   -webkit-user-drag: none;
   touch-action: none;
   /* will use mask-image to color SVGs */
-  -webkit-mask-size: contain;
-  mask-size: contain;
+  /* IMPORTANT: keep this in sync with the inline styles in App.vue.
+     `contain` can cause subtle edge bleed between adjacent tiles.
+     We want the mask to map 1:1 to the element box so tiles can be flush. */
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-position: center;
   mask-position: center;
+
+  /* Prevent 1px antialias "bleed" where two masked tiles meet flush.
+     This is a *visual* fix for the on-screen preview only; exports are
+     generated from the SVG pipeline and are unaffected. */
+  box-shadow: inset 0 0 0 0.75px var(--tile-anti-bleed, transparent);
 }
 
 /* Pattern finder: big uploaded SVG background.

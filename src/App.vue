@@ -1096,6 +1096,50 @@ const gridMetrics = computed(() => {
   }
 })
 
+// Placement metrics with an extra invisible 1-cell border around the canvas.
+// Used to allow 2× SVG assets to bleed 1 grid square outside the visible canvas.
+// The visible overlay/export remain unchanged.
+const placementMetrics = computed(() => {
+  const m = gridMetrics.value
+  const cols = m.cols
+  const rows = m.rows
+  const colWidths = m.colWidths
+  const rowHeights = m.rowHeights
+
+  const extraLeft = colWidths[0] || 0
+  const extraTop = rowHeights[0] || 0
+
+  // Prefix sums for intersections, shifted so index 0 is at -1 cell.
+  const colX = new Array(cols + 3)
+  colX[0] = -extraLeft
+  for (let i = 0; i < cols; i++) colX[i + 1] = colX[i] + (colWidths[i] || 0)
+  colX[cols + 1] = colX[cols] + (colWidths[cols - 1] || extraLeft)
+  // keep a final element for bounds convenience
+  colX[cols + 2] = colX[cols + 1]
+
+  const rowY = new Array(rows + 3)
+  rowY[0] = -extraTop
+  for (let i = 0; i < rows; i++) rowY[i + 1] = rowY[i] + (rowHeights[i] || 0)
+  rowY[rows + 1] = rowY[rows] + (rowHeights[rows - 1] || extraTop)
+  rowY[rows + 2] = rowY[rows + 1]
+
+  return {
+    cols,
+    rows,
+    colWidths,
+    rowHeights,
+    // intersections include [-1 .. cols] and [-1 .. rows]
+    colX,
+    rowY,
+    bleedLeft: extraLeft,
+    bleedTop: extraTop,
+    bleedRight: colWidths[cols - 1] || extraLeft,
+    bleedBottom: rowHeights[rows - 1] || extraTop,
+    gridW: m.gridW,
+    gridH: m.gridH,
+  }
+})
+
 // Calculate how many cells actually fit in each dimension
 const gridColumns = computed(() => {
   return gridSize.value
@@ -1135,11 +1179,24 @@ const gridCells = computed(() => {
 // - 2×+ assets (and uploaded images): snap to nearest GRID INTERSECTION (corner)
 const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, multiplier = 1) => {
   // Snap math must match overlay + placement. Use the shared, remainder-distributed grid.
-  const { cols, rows, colX, rowY, gridW, gridH } = gridMetrics.value
+  const usePlacement = (Number(multiplier || 1) || 1) > 1
+  const { cols, rows, colX, rowY, gridW, gridH } = usePlacement
+    ? placementMetrics.value
+    : gridMetrics.value
 
   // Clamp pointer inside effective grid area.
-  const px = Math.max(0, Math.min(gridW, pointerX))
-  const py = Math.max(0, Math.min(gridH, pointerY))
+  const px = usePlacement
+    ? Math.max(
+        -placementMetrics.value.bleedLeft,
+        Math.min(gridW + placementMetrics.value.bleedRight, pointerX),
+      )
+    : Math.max(0, Math.min(gridW, pointerX))
+  const py = usePlacement
+    ? Math.max(
+        -placementMetrics.value.bleedTop,
+        Math.min(gridH + placementMetrics.value.bleedBottom, pointerY),
+      )
+    : Math.max(0, Math.min(gridH, pointerY))
 
   const findIndex = (prefix, v) => {
     // prefix length is N+1, monotonic.
@@ -1168,8 +1225,13 @@ const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, m
     const snapCol = px - left < right - px ? colIdx : colIdx + 1
     const snapRow = py - top < bottom - py ? rowIdx : rowIdx + 1
 
-    const clampedCol = Math.max(0, Math.min(cols, snapCol))
-    const clampedRow = Math.max(0, Math.min(rows, snapRow))
+    // With placement metrics, intersections run from [-1..cols] and [-1..rows]
+    const minCol = usePlacement ? 0 : 0
+    const minRow = usePlacement ? 0 : 0
+    const maxCol = usePlacement ? cols + 1 : cols
+    const maxRow = usePlacement ? rows + 1 : rows
+    const clampedCol = Math.max(minCol, Math.min(maxCol, snapCol))
+    const clampedRow = Math.max(minRow, Math.min(maxRow, snapRow))
     return { x: colX[clampedCol], y: rowY[clampedRow] }
   }
 
@@ -1365,10 +1427,25 @@ const onDrop = (event) => {
   // placement and small negative values caused by tiny offsets (like -0.001)
   finalX = Math.round(finalX)
   finalY = Math.round(finalY)
-  // Clamp to the effective grid area (gridW/gridH) since that's what the
-  // overlay + snapping are based on.
-  finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-  finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+  // Clamp:
+  // - 1× SVG assets stay fully inside the visible grid.
+  // - 2× SVG assets may bleed 1 grid square outside the visible canvas.
+  // - Uploaded images keep the existing (inside) behavior.
+  if (dragged && dragged.isUploaded) {
+    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+  } else if (forcedCurrentMultiplier > 1) {
+    const pm = placementMetrics.value
+    const minX = -Math.round(pm.bleedLeft || 0)
+    const minY = -Math.round(pm.bleedTop || 0)
+    const maxX = Math.round(gridW + (pm.bleedRight || 0) - renderW)
+    const maxY = Math.round(gridH + (pm.bleedBottom || 0) - renderH)
+    finalX = Math.max(minX, Math.min(finalX, maxX))
+    finalY = Math.max(minY, Math.min(finalY, maxY))
+  } else {
+    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+  }
 
   // snap calculations executed
   // record state before adding new asset so Ctrl+Z can undo
@@ -1482,10 +1559,24 @@ const spawnAssetCentered = (asset) => {
       finalY = Math.round(rowY[cellRow] + dropOffsetY)
     }
 
-    // Clamp so the asset remains at least partially visible inside canvas
-    // Clamp to effective grid bounds (matches overlay + snapping)
-    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+    // Clamp:
+    // - 2× SVG assets may bleed 1 grid square outside the visible canvas.
+    // - Everything else stays inside.
+    if (asset && asset.isUploaded) {
+      finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+      finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+    } else if (currentMultiplier > 1) {
+      const pm = placementMetrics.value
+      const minX = -Math.round(pm.bleedLeft || 0)
+      const minY = -Math.round(pm.bleedTop || 0)
+      const maxX = Math.round(gridW + (pm.bleedRight || 0) - renderW)
+      const maxY = Math.round(gridH + (pm.bleedBottom || 0) - renderH)
+      finalX = Math.max(minX, Math.min(finalX, maxX))
+      finalY = Math.max(minY, Math.min(finalY, maxY))
+    } else {
+      finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+      finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+    }
 
     pushHistory()
     const newItem = {
@@ -2294,7 +2385,8 @@ const onCanvasMouseUp = (event) => {
       }
 
       // Use the same remainder-distributed grid metrics used by overlay/drop.
-      const metrics = gridMetrics.value
+      // For 2× assets, use placementMetrics (allows 1-cell bleed outside).
+      const metrics = currentMultiplier > 1 ? placementMetrics.value : gridMetrics.value
       const colX = metrics?.colX || []
       const rowY = metrics?.rowY || []
       const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasRectNow.width
@@ -2315,8 +2407,14 @@ const onCanvasMouseUp = (event) => {
 
         // Clamp to the effective grid bounds so the asset stays within grid area.
         // Snap intersections include the final boundary, so we clamp by the span.
-        const maxCol = Math.max(0, gridColumns.value - currentMultiplier)
-        const maxRow = Math.max(0, gridRows.value - currentMultiplier)
+        // With 1-cell bleed, intersections run from [-1..cols] so top-left
+        // can be at -1 (index 0 in placementMetrics prefix arrays).
+        const maxCol =
+          currentMultiplier > 1
+            ? gridColumns.value
+            : Math.max(0, gridColumns.value - currentMultiplier)
+        const maxRow =
+          currentMultiplier > 1 ? gridRows.value : Math.max(0, gridRows.value - currentMultiplier)
         let col = 0
         let row = 0
         if (colX.length) {
@@ -2386,23 +2484,48 @@ const onCanvasMouseUp = (event) => {
       finalY = Math.round(displayY)
     }
 
-    // Allow assets to be partially outside the canvas (so they're clipped by the edge).
-    // Keep at least 1px visible inside the canvas to avoid fully losing the asset.
-    // For uploaded images, use renderW/renderH (which represent N grid squares).
+    // Clamp final placement.
+    // - Uploaded images: keep existing behavior (at least 1px visible).
+    // - 2× SVG: allow 1-cell bleed outside (fully optional — clipped by canvas).
+    // - 1× SVG: keep fully inside the visible grid.
     const canvasRect = canvasRef.value.getBoundingClientRect()
     const canvasWidth = canvasRect.width
     const canvasHeight = canvasRect.height
+    const r = getAssetPixelRect(asset)
     const renderW =
-      asset && asset.isUploaded ? Math.round(asset.renderW || currentAssetSize) : currentAssetSize
+      asset && asset.isUploaded
+        ? Math.round(asset.renderW || r.w || currentAssetSize)
+        : Math.round(r.w || currentAssetSize)
     const renderH =
-      asset && asset.isUploaded ? Math.round(asset.renderH || currentAssetSize) : currentAssetSize
-    const minX = -Math.floor(renderW) + 1
-    const minY = -Math.floor(renderH) + 1
-    const maxX = Math.max(1, canvasWidth - 1)
-    const maxY = Math.max(1, canvasHeight - 1)
+      asset && asset.isUploaded
+        ? Math.round(asset.renderH || r.h || currentAssetSize)
+        : Math.round(r.h || currentAssetSize)
 
-    finalX = Math.max(minX, Math.min(finalX, maxX))
-    finalY = Math.max(minY, Math.min(finalY, maxY))
+    if (asset && asset.isUploaded) {
+      const minX = -Math.floor(renderW) + 1
+      const minY = -Math.floor(renderH) + 1
+      const maxX = Math.max(1, canvasWidth - 1)
+      const maxY = Math.max(1, canvasHeight - 1)
+      finalX = Math.max(minX, Math.min(finalX, maxX))
+      finalY = Math.max(minY, Math.min(finalY, maxY))
+    } else if ((asset.multiplier || 1) > 1) {
+      const pm = placementMetrics.value
+      const minX = -Math.round(pm.bleedLeft || 0)
+      const minY = -Math.round(pm.bleedTop || 0)
+      const maxX = Math.round(
+        (gridMetrics.value?.gridW || canvasWidth) + (pm.bleedRight || 0) - renderW,
+      )
+      const maxY = Math.round(
+        (gridMetrics.value?.gridH || canvasHeight) + (pm.bleedBottom || 0) - renderH,
+      )
+      finalX = Math.max(minX, Math.min(finalX, maxX))
+      finalY = Math.max(minY, Math.min(finalY, maxY))
+    } else {
+      const gridW = gridMetrics.value?.gridW ?? canvasWidth
+      const gridH = gridMetrics.value?.gridH ?? canvasHeight
+      finalX = Math.max(0, Math.min(finalX, Math.round(gridW - renderW)))
+      finalY = Math.max(0, Math.min(finalY, Math.round(gridH - renderH)))
+    }
 
     // record previous state before finalizing the move so undo can revert
     pushHistory()
@@ -2962,11 +3085,15 @@ const getExportSVGStringAsync = async () => {
   let defs = ''
   let idx = 0
   for (const a of placedAssets.value) {
-    const rx = (a.x || 0) * scale
-    const ry = (a.y || 0) * scale
-    const assetSizeRendered = getAssetPixelSize(a)
-    const rw = assetSizeRendered * scale
-    const rh = rw
+    // IMPORTANT: Use the *actual* on-screen rect (w/h) rather than forcing
+    // a square. For remainder-distributed grids, cell w/h can differ by 1px.
+    // If we export as square, two adjacent tiles can end up with a tiny overlap
+    // or gap after rasterization -> visible "spikes".
+    const rectRendered = getAssetPixelRect(a)
+    const rx = Math.round((a.x || 0) * scale)
+    const ry = Math.round((a.y || 0) * scale)
+    const rw = Math.round((rectRendered.w || 0) * scale)
+    const rh = Math.round((rectRendered.h || 0) * scale)
     const rotation = a.rotation || 0
     const cx = rx + rw / 2
     const cy = ry + rh / 2
@@ -2996,19 +3123,19 @@ const getExportSVGStringAsync = async () => {
       // sized to rw/rh. Use preserveAspectRatio so aspect is preserved like
       // the on-screen rendering ('xMidYMid meet'). Rotation is applied on the
       // outer group so behavior remains consistent.
-      svg += `<g transform="rotate(${rotation} ${cx} ${cy})">\n`
-      svg += `<svg x="${rx}" y="${ry}" width="${rw}" height="${rh}" viewBox="${parts.minX} ${parts.minY} ${parts.vbW} ${parts.vbH}" preserveAspectRatio="${preserveAspect}">\n`
+      svg += `<g transform="rotate(${rotation} ${cx} ${cy})" shape-rendering="geometricPrecision">\n`
+      svg += `<svg x="${rx}" y="${ry}" width="${rw}" height="${rh}" viewBox="${parts.minX} ${parts.minY} ${parts.vbW} ${parts.vbH}" preserveAspectRatio="${preserveAspect}" shape-rendering="geometricPrecision">\n`
       svg += `${tintedInner}\n`
       svg += `</svg>\n</g>\n`
     } else if (fetched && fetched.type === 'image') {
       // raster image: draw directly
-      svg += `<g transform="rotate(${rotation} ${cx} ${cy})">\n`
+      svg += `<g transform="rotate(${rotation} ${cx} ${cy})" shape-rendering="geometricPrecision">\n`
       svg += `<image href="${svgEscape(fetched.dataUrl)}" x="${rx}" y="${ry}" width="${rw}" height="${rh}" preserveAspectRatio="${preserveAspect}" />\n`
       svg += `</g>\n`
     } else {
       // fallback: draw with provided path or dataUrl
       const href = fetched && fetched.dataUrl ? fetched.dataUrl : a.path
-      svg += `<g transform="rotate(${rotation} ${cx} ${cy})">\n`
+      svg += `<g transform="rotate(${rotation} ${cx} ${cy})" shape-rendering="geometricPrecision">\n`
       svg += `<image href="${svgEscape(href)}" x="${rx}" y="${ry}" width="${rw}" height="${rh}" preserveAspectRatio="${preserveAspect}" />\n`
       svg += `</g>\n`
     }
@@ -4639,6 +4766,8 @@ const randomizePattern = () => {
                 width: getAssetPixelRect(asset).w + 'px',
                 height: getAssetPixelRect(asset).h + 'px',
                 background: asset.color || selectedAssetColor,
+                // tiny inset outline to hide mask antialias seams when tiles are flush
+                '--tile-anti-bleed': selectedBackgroundColor,
                 WebkitMaskImage: `url(${asset.path})`,
                 maskImage: `url(${asset.path})`,
                 WebkitMaskSize: '100% 100%',
