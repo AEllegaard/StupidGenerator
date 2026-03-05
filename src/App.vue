@@ -4058,13 +4058,13 @@ const randomizePattern = () => {
       <div class="ml-3 mt-8">
         <h2 class="font-object font-medium text-base mt-10 mb-2">Save as</h2>
         <div class="mb-2">
-          <label class="font-object text-xs block mb-1">Export quality (scale)</label>
+          <label class="font-object text-xs block mb-1  text-gray-500">Export quality</label>
           <select v-model.number="exportScale" class="select w-full">
-            <option :value="2">Sharp</option>
-            <option :value="3">Very sharp</option>
+            <option :value="2">Standard</option>
+            <option :value="3">High quality</option>
           </select>
         </div>
-        <div class="flex gap-2 mb-4">
+        <div class="flex gap-2 my-4">
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPDF">PDF</button>
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsSVG">SVG</button>
           <button class="btn btn--sm px-2 cursor-pointer" @click.prevent="exportAsPNG">PNG</button>
