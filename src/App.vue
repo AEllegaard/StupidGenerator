@@ -1001,15 +1001,18 @@ const gridMetrics = computed(() => {
   const totalW = Number(canvasPx.value.width || 0)
   const totalH = Number(canvasPx.value.height || 0)
 
-  // Distribute remainder pixels across the first N columns/rows so the grid
-  // covers the canvas exactly *and* stays integer-aligned.
+  // OPTION B: uniform cell sizes.
+  // We intentionally do NOT distribute remainder pixels because that causes tiles
+  // to be rendered at slightly different sizes (e.g. 47px vs 48px) which makes
+  // curved SVG assets look like they don't align.
+  // Any leftover pixels will remain as an unused margin on the right/bottom.
   const baseW = Math.max(1, Math.floor(totalW / cols))
   const baseH = Math.max(1, Math.floor(totalH / rows))
   const remW = Math.max(0, Math.round(totalW - baseW * cols))
   const remH = Math.max(0, Math.round(totalH - baseH * rows))
 
-  const colWidths = Array.from({ length: cols }, (_, i) => baseW + (i < remW ? 1 : 0))
-  const rowHeights = Array.from({ length: rows }, (_, i) => baseH + (i < remH ? 1 : 0))
+  const colWidths = Array.from({ length: cols }, () => baseW)
+  const rowHeights = Array.from({ length: rows }, () => baseH)
 
   // Prefix sums to map pointer->cell and compute intersection positions.
   const colX = new Array(cols + 1)
@@ -1058,7 +1061,12 @@ const gridRows = computed(() => {
 })
 
 const gridStyle = computed(() => {
-  const { colWidths, rowHeights, gridW, gridH } = gridMetrics.value
+  const { colWidths, rowHeights, gridW, gridH, totalW, totalH, remW, remH } = gridMetrics.value
+
+  // With uniform cells we may have remainder pixels. Center the grid in the canvas
+  // so the unused margin is split evenly (prevents a visible “gap”/drift on one side).
+  const offsetX = Math.floor((remW || Math.max(0, (totalW || 0) - (gridW || 0))) / 2)
+  const offsetY = Math.floor((remH || Math.max(0, (totalH || 0) - (gridH || 0))) / 2)
 
   return {
     display: 'grid',
@@ -1067,7 +1075,7 @@ const gridStyle = computed(() => {
     gap: '0px',
     width: `${gridW}px`,
     height: `${gridH}px`,
-    transform: 'translate(0px, 0px)',
+    transform: `translate(${offsetX}px, ${offsetY}px)`,
   }
 })
 
@@ -1088,7 +1096,15 @@ const computeSnapFromPointer = (
   opts = {},
 ) => {
   // Snap math must match overlay + placement. Use the shared, remainder-distributed grid.
-  const { cols, rows, colX, rowY, gridW, gridH } = gridMetrics.value
+  const { cols, rows, colX, rowY, gridW, gridH, totalW, totalH, remW, remH } = gridMetrics.value
+
+  // When using uniform cell sizes (option B), the grid may not fill the entire
+  // canvas. We center it, so snapping must be computed in grid-local space.
+  const gridOffsetX = Math.floor((remW || Math.max(0, (totalW || 0) - (gridW || 0))) / 2)
+  const gridOffsetY = Math.floor((remH || Math.max(0, (totalH || 0) - (gridH || 0))) / 2)
+
+  const pointerXLocal = pointerX - gridOffsetX
+  const pointerYLocal = pointerY - gridOffsetY
 
   const forceIntersection = !!opts.forceIntersection
   const allowBleedOpt = !!opts.allowBleed
@@ -1106,8 +1122,8 @@ const computeSnapFromPointer = (
 
   // Clamp pointer inside effective snap area.
   // For 2× we allow one extra cell outside in every direction.
-  const px = Math.max(-bleedLeft, Math.min(gridW + bleedRight, pointerX))
-  const py = Math.max(-bleedTop, Math.min(gridH + bleedBottom, pointerY))
+  const px = Math.max(-bleedLeft, Math.min(gridW + bleedRight, pointerXLocal))
+  const py = Math.max(-bleedTop, Math.min(gridH + bleedBottom, pointerYLocal))
 
   const findIndex = (prefix, v) => {
     // prefix length is N+1, monotonic.
@@ -1147,7 +1163,7 @@ const computeSnapFromPointer = (
 
     const clampedCol = Math.max(0, Math.min(cols, snapCol))
     const clampedRow = Math.max(0, Math.min(rows, snapRow))
-    return { x: colX[clampedCol], y: rowY[clampedRow] }
+    return { x: colX[clampedCol] + gridOffsetX, y: rowY[clampedRow] + gridOffsetY }
   }
 
   // 1×: center of nearest cell
@@ -1155,7 +1171,7 @@ const computeSnapFromPointer = (
   const row = Math.max(0, Math.min(rows - 1, findIndex(rowY, py)))
   const cx = colX[col] + (colX[col + 1] - colX[col]) / 2
   const cy = rowY[row] + (rowY[row + 1] - rowY[row]) / 2
-  return { x: cx, y: cy }
+  return { x: cx + gridOffsetX, y: cy + gridOffsetY }
 }
 
 // Drag and drop functions
@@ -4825,7 +4841,8 @@ const randomizePattern = () => {
                 width: getAssetPixelRect(asset).w + 'px',
                 height: getAssetPixelRect(asset).h + 'px',
                 background: asset.color || selectedAssetColor,
-                // tiny inset outline to hide mask antialias seams when tiles are flush
+                // Seam fix: a tiny anti-bleed color is used by CSS inset box-shadow
+                // to fill subpixel gaps between two adjacent masked tiles.
                 '--tile-anti-bleed': selectedBackgroundColor,
                 WebkitMaskImage: `url(${asset.path})`,
                 maskImage: `url(${asset.path})`,

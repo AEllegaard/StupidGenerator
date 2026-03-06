@@ -350,9 +350,15 @@ body {
   justify-content: flex-start;
   position: relative;
   overflow: hidden;
+  /* Hard clip to avoid 1px seams/bleed at edges when masks/transforms are used. */
+  clip-path: inset(0);
+  isolation: isolate;
   padding: 0;
   touch-action: none; /* allow custom drag handling via pointer events */
 }
+
+/* NOTE: seams should be solved by exact mask sizing/positioning (not by overdraw).
+   If we ever re-introduce a visual seam patch, keep it opt-in and scoped. */
 
 .canvas-preset.dragging-out {
   /* Keep clipping active even while dragging so assets don't stop being cut by the canvas outline */
@@ -637,13 +643,23 @@ body {
   mask-size: 100% 100%;
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
+  /* Keep mask centered so asymmetric SVGs (corner/half circle) sit correctly
+    inside the square. Seams are handled via a tiny overdraw below. */
   -webkit-mask-position: center;
   mask-position: center;
 
   /* Prevent 1px antialias "bleed" where two masked tiles meet flush.
      This is a *visual* fix for the on-screen preview only; exports are
      generated from the SVG pipeline and are unaffected. */
-  box-shadow: inset 0 0 0 0.75px var(--tile-anti-bleed, transparent);
+  /* Performance + pixel stability: keep the tile on its own layer and reduce
+    jitter/antialias misalignment against the grid. */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  /* Seam fix (paint-only): a 0px drop-shadow acts like a 1px overdraw along the
+    alpha edge of the mask without affecting layout metrics.
+    Uses background color so any subpixel gap between two tiles disappears. */
+  filter: drop-shadow(0 0 0.75px var(--tile-anti-bleed, transparent));
+  box-shadow: none;
 }
 
 /* Pattern finder: big uploaded SVG background.
