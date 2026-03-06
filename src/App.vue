@@ -1096,50 +1096,6 @@ const gridMetrics = computed(() => {
   }
 })
 
-// Placement metrics with an extra invisible 1-cell border around the canvas.
-// Used to allow 2× SVG assets to bleed 1 grid square outside the visible canvas.
-// The visible overlay/export remain unchanged.
-const placementMetrics = computed(() => {
-  const m = gridMetrics.value
-  const cols = m.cols
-  const rows = m.rows
-  const colWidths = m.colWidths
-  const rowHeights = m.rowHeights
-
-  const extraLeft = colWidths[0] || 0
-  const extraTop = rowHeights[0] || 0
-
-  // Prefix sums for intersections, shifted so index 0 is at -1 cell.
-  const colX = new Array(cols + 3)
-  colX[0] = -extraLeft
-  for (let i = 0; i < cols; i++) colX[i + 1] = colX[i] + (colWidths[i] || 0)
-  colX[cols + 1] = colX[cols] + (colWidths[cols - 1] || extraLeft)
-  // keep a final element for bounds convenience
-  colX[cols + 2] = colX[cols + 1]
-
-  const rowY = new Array(rows + 3)
-  rowY[0] = -extraTop
-  for (let i = 0; i < rows; i++) rowY[i + 1] = rowY[i] + (rowHeights[i] || 0)
-  rowY[rows + 1] = rowY[rows] + (rowHeights[rows - 1] || extraTop)
-  rowY[rows + 2] = rowY[rows + 1]
-
-  return {
-    cols,
-    rows,
-    colWidths,
-    rowHeights,
-    // intersections include [-1 .. cols] and [-1 .. rows]
-    colX,
-    rowY,
-    bleedLeft: extraLeft,
-    bleedTop: extraTop,
-    bleedRight: colWidths[cols - 1] || extraLeft,
-    bleedBottom: rowHeights[rows - 1] || extraTop,
-    gridW: m.gridW,
-    gridH: m.gridH,
-  }
-})
-
 // Calculate how many cells actually fit in each dimension
 const gridColumns = computed(() => {
   return gridSize.value
@@ -1175,28 +1131,37 @@ const gridCells = computed(() => {
 })
 
 // Helper: snap anchor for placement.
-// - 1× assets: snap to CENTER of nearest cell
-// - 2×+ assets (and uploaded images): snap to nearest GRID INTERSECTION (corner)
-const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, multiplier = 1) => {
+// - 1× SVG assets: snap to CENTER of nearest cell
+// - 2×+ SVG assets: snap to nearest GRID INTERSECTION (corner)
+// - Uploaded images: ALWAYS snap to GRID INTERSECTION (corner), even at size 1
+const computeSnapFromPointer = (
+  pointerX,
+  pointerY,
+  canvasWidth,
+  canvasHeight,
+  multiplier = 1,
+  opts = {},
+) => {
   // Snap math must match overlay + placement. Use the shared, remainder-distributed grid.
-  const usePlacement = (Number(multiplier || 1) || 1) > 1
-  const { cols, rows, colX, rowY, gridW, gridH } = usePlacement
-    ? placementMetrics.value
-    : gridMetrics.value
+  const { cols, rows, colX, rowY, gridW, gridH } = gridMetrics.value
 
-  // Clamp pointer inside effective grid area.
-  const px = usePlacement
-    ? Math.max(
-        -placementMetrics.value.bleedLeft,
-        Math.min(gridW + placementMetrics.value.bleedRight, pointerX),
-      )
-    : Math.max(0, Math.min(gridW, pointerX))
-  const py = usePlacement
-    ? Math.max(
-        -placementMetrics.value.bleedTop,
-        Math.min(gridH + placementMetrics.value.bleedBottom, pointerY),
-      )
-    : Math.max(0, Math.min(gridH, pointerY))
+  const forceIntersection = !!opts.forceIntersection
+
+  // Optional invisible "bleed" margin around the canvas.
+  // This lets 2× SVG assets sit 1 grid cell outside the visible canvas (they'll be clipped).
+  // Uploaded images: keep inside the visible grid.
+  const allowBleed = (multiplier || 1) > 1 && !forceIntersection
+  const bleedCols = allowBleed ? 1 : 0
+  const bleedRows = allowBleed ? 1 : 0
+  const bleedLeft = bleedCols ? (colX?.[1] ?? 0) : 0
+  const bleedTop = bleedRows ? (rowY?.[1] ?? 0) : 0
+  const bleedRight = bleedCols ? colX?.[cols] - (colX?.[cols - 1] ?? colX?.[cols] ?? 0) : 0
+  const bleedBottom = bleedRows ? rowY?.[rows] - (rowY?.[rows - 1] ?? rowY?.[rows] ?? 0) : 0
+
+  // Clamp pointer inside effective snap area.
+  // For 2× we allow one extra cell outside in every direction.
+  const px = Math.max(-bleedLeft, Math.min(gridW + bleedRight, pointerX))
+  const py = Math.max(-bleedTop, Math.min(gridH + bleedBottom, pointerY))
 
   const findIndex = (prefix, v) => {
     // prefix length is N+1, monotonic.
@@ -1212,26 +1177,30 @@ const computeSnapFromPointer = (pointerX, pointerY, canvasWidth, canvasHeight, m
     return Math.max(0, Math.min(prefix.length - 2, lo))
   }
 
-  if ((multiplier || 1) > 1) {
+  if (forceIntersection || (multiplier || 1) > 1) {
     // Nearest intersection: choose nearest boundary line.
-    const colIdx = findIndex(colX, px)
-    const rowIdx = findIndex(rowY, py)
+    // For the bleed margin: treat anything left/top of 0 as belonging to the
+    // first cell, and anything right/bottom of the grid as belonging to the
+    // last cell.
+    const pxIn = Math.max(0, Math.min(gridW, px))
+    const pyIn = Math.max(0, Math.min(gridH, py))
+
+    const colIdx = findIndex(colX, pxIn)
+    const rowIdx = findIndex(rowY, pyIn)
 
     const left = colX[colIdx]
     const right = colX[colIdx + 1]
     const top = rowY[rowIdx]
     const bottom = rowY[rowIdx + 1]
 
-    const snapCol = px - left < right - px ? colIdx : colIdx + 1
-    const snapRow = py - top < bottom - py ? rowIdx : rowIdx + 1
+    // If we're in the bleed zone, force snapping to the outer boundary.
+    const snapCol =
+      px < 0 ? 0 : px > gridW ? cols : pxIn - left < right - pxIn ? colIdx : colIdx + 1
+    const snapRow =
+      py < 0 ? 0 : py > gridH ? rows : pyIn - top < bottom - pyIn ? rowIdx : rowIdx + 1
 
-    // With placement metrics, intersections run from [-1..cols] and [-1..rows]
-    const minCol = usePlacement ? 0 : 0
-    const minRow = usePlacement ? 0 : 0
-    const maxCol = usePlacement ? cols + 1 : cols
-    const maxRow = usePlacement ? rows + 1 : rows
-    const clampedCol = Math.max(minCol, Math.min(maxCol, snapCol))
-    const clampedRow = Math.max(minRow, Math.min(maxRow, snapRow))
+    const clampedCol = Math.max(0, Math.min(cols, snapCol))
+    const clampedRow = Math.max(0, Math.min(rows, snapRow))
     return { x: colX[clampedCol], y: rowY[clampedRow] }
   }
 
@@ -1320,13 +1289,19 @@ const onDrop = (event) => {
   // Manual placement: allow Star to be 1x if the user picked 1x.
   const forcedCurrentMultiplier = currentMultiplier
 
-  // Snap anchor: 1× -> cell center, 2×+ -> intersection
+  // Snap anchor:
+  // - SVG 1× -> cell center
+  // - SVG 2×+ -> intersection
+  // - Uploaded images -> ALWAYS intersections
   const snapAnchor = computeSnapFromPointer(
     x,
     y,
     canvasWidth,
     canvasHeight,
     forcedCurrentMultiplier,
+    {
+      forceIntersection: !!(dragged && dragged.isUploaded),
+    },
   )
   const snappedX = snapAnchor.x
   const snappedY = snapAnchor.y
@@ -1382,10 +1357,26 @@ const onDrop = (event) => {
   const svgRenderW = assetSpan === 1 ? colWidths[cellCol] || 1 : spanW(tlCol, 2)
   const svgRenderH = assetSpan === 1 ? rowHeights[cellRow] || 1 : spanH(tlRow, 2)
 
-  const renderW =
+  // Uploaded images: width should be exactly N grid squares wide, starting at the snapped intersection.
+  // (N comes from backgroundImageMultiplier.)
+  const imgSpan =
+    dragged && dragged.isUploaded ? Math.max(1, Math.round(forcedCurrentMultiplier || 1)) : 1
+  const imgCol =
     dragged && dragged.isUploaded
-      ? Math.round(dragged.renderW || svgRenderW)
-      : Math.round(svgRenderW)
+      ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedX)))
+      : 0
+  const imgRow =
+    dragged && dragged.isUploaded
+      ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedY)))
+      : 0
+  const imgRenderW =
+    dragged && dragged.isUploaded
+      ? spanW(Math.min(imgCol, Math.max(0, cols - imgSpan)), Math.min(imgSpan, cols))
+      : 0
+  const imgRenderHBase = dragged && dragged.isUploaded ? spanH(imgRow, 1) : 0
+
+  const renderW =
+    dragged && dragged.isUploaded ? Math.round(imgRenderW || svgRenderW) : Math.round(svgRenderW)
 
   const renderH = (() => {
     if (!(dragged && dragged.isUploaded)) return Math.round(svgRenderH)
@@ -1393,7 +1384,7 @@ const onDrop = (event) => {
     const nw = Number(dragged.naturalW || 0)
     const nh = Number(dragged.naturalH || 0)
     if (nw > 0 && nh > 0) return Math.round(renderW * (nh / nw))
-    return Math.round(svgRenderH)
+    return Math.round(imgRenderHBase || svgRenderH)
   })()
   // Only apply horizontal asset-specific offset for 1x assets — larger
   // multipliers may amplify the offset too much (Half Circle padding fix).
@@ -1427,22 +1418,18 @@ const onDrop = (event) => {
   // placement and small negative values caused by tiny offsets (like -0.001)
   finalX = Math.round(finalX)
   finalY = Math.round(finalY)
-  // Clamp:
-  // - 1× SVG assets stay fully inside the visible grid.
-  // - 2× SVG assets may bleed 1 grid square outside the visible canvas.
-  // - Uploaded images keep the existing (inside) behavior.
-  if (dragged && dragged.isUploaded) {
-    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
-  } else if (forcedCurrentMultiplier > 1) {
-    const pm = placementMetrics.value
-    const minX = -Math.round(pm.bleedLeft || 0)
-    const minY = -Math.round(pm.bleedTop || 0)
-    const maxX = Math.round(gridW + (pm.bleedRight || 0) - renderW)
-    const maxY = Math.round(gridH + (pm.bleedBottom || 0) - renderH)
-    finalX = Math.max(minX, Math.min(finalX, maxX))
-    finalY = Math.max(minY, Math.min(finalY, maxY))
+  // Clamp for placement.
+  // 1× assets must stay fully inside the visible grid.
+  // 2× assets may extend 1 cell outside the canvas in any direction (invisible bleed).
+  if (forcedCurrentMultiplier > 1 && !(dragged && dragged.isUploaded)) {
+    const bleedLeft = colX?.[1] ?? 0
+    const bleedTop = rowY?.[1] ?? 0
+    const bleedRight = colWidths?.[cols - 1] ?? 0
+    const bleedBottom = rowHeights?.[rows - 1] ?? 0
+    finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
+    finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
   } else {
+    // Default (previous) clamping: inside the visible grid.
     finalX = Math.max(0, Math.min(finalX, gridW - renderW))
     finalY = Math.max(0, Math.min(finalY, gridH - renderH))
   }
@@ -1503,13 +1490,19 @@ const spawnAssetCentered = (asset) => {
     let currentMultiplier = assetMultiplier.value || 1
     if (asset && asset.isUploaded) currentMultiplier = backgroundImageMultiplier.value || 1
 
-    // Snap anchor: 1× -> cell center, 2×+ -> intersection
+    // Snap anchor:
+    // - SVG 1× -> cell center
+    // - SVG 2×+ -> intersection
+    // - Uploaded images -> ALWAYS intersections
     const snapAnchor = computeSnapFromPointer(
       centerX,
       centerY,
       canvasWidth,
       canvasHeight,
       currentMultiplier,
+      {
+        forceIntersection: !!(asset && asset.isUploaded),
+      },
     )
 
     // Use the shared grid metrics so sizes match overlay + snapping.
@@ -1531,15 +1524,55 @@ const spawnAssetCentered = (asset) => {
     const tlCol = Math.max(0, Math.min(cols - 2, findCellIndex(colX, snapAnchor.x)))
     const tlRow = Math.max(0, Math.min(rows - 2, findCellIndex(rowY, snapAnchor.y)))
 
+    const spanW = (fromCol, span) => {
+      let w = 0
+      for (let i = 0; i < span; i++) w += colWidths[fromCol + i] || 0
+      return w
+    }
+    const spanH = (fromRow, span) => {
+      let h = 0
+      for (let i = 0; i < span; i++) h += rowHeights[fromRow + i] || 0
+      return h
+    }
+
+    // Render size:
+    // - SVG assets: grid-based rect (1 cell or 2x2 cells)
+    // - Uploaded raster images: width is grid-based; height preserves natural ratio when known
     const currentMultiplierClamped = currentMultiplier > 1 ? 2 : 1
-    const renderW =
+    const svgRenderW =
       currentMultiplierClamped === 1
         ? colWidths[cellCol] || 1
         : (colWidths[tlCol] || 0) + (colWidths[tlCol + 1] || 0)
-    const renderH =
+    const svgRenderH =
       currentMultiplierClamped === 1
         ? rowHeights[cellRow] || 1
         : (rowHeights[tlRow] || 0) + (rowHeights[tlRow + 1] || 0)
+
+    const imgSpan = asset && asset.isUploaded ? Math.max(1, Math.round(currentMultiplier || 1)) : 1
+    const imgCol =
+      asset && asset.isUploaded
+        ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapAnchor.x)))
+        : 0
+    const imgRow =
+      asset && asset.isUploaded
+        ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapAnchor.y)))
+        : 0
+    const imgRenderW =
+      asset && asset.isUploaded
+        ? spanW(Math.min(imgCol, Math.max(0, cols - imgSpan)), Math.min(imgSpan, cols))
+        : 0
+    const imgRenderHBase = asset && asset.isUploaded ? spanH(imgRow, 1) : 0
+
+    const renderW =
+      asset && asset.isUploaded ? Math.round(imgRenderW || svgRenderW) : Math.round(svgRenderW)
+    const renderH = (() => {
+      if (!(asset && asset.isUploaded)) return Math.round(svgRenderH)
+      if (asset.renderH) return Math.round(asset.renderH)
+      const nw = Number(asset.naturalW || 0)
+      const nh = Number(asset.naturalH || 0)
+      if (nw > 0 && nh > 0) return Math.round(renderW * (nh / nw))
+      return Math.round(imgRenderHBase || svgRenderH)
+    })()
 
     const dropOffsetX = (currentMultiplier === 1 ? asset.offsetX || 0 : 0) * renderW
     const dropOffsetY = (asset.offsetY || 0) * renderH
@@ -1559,21 +1592,18 @@ const spawnAssetCentered = (asset) => {
       finalY = Math.round(rowY[cellRow] + dropOffsetY)
     }
 
-    // Clamp:
-    // - 2× SVG assets may bleed 1 grid square outside the visible canvas.
-    // - Everything else stays inside.
-    if (asset && asset.isUploaded) {
-      finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-      finalY = Math.max(0, Math.min(finalY, gridH - renderH))
-    } else if (currentMultiplier > 1) {
-      const pm = placementMetrics.value
-      const minX = -Math.round(pm.bleedLeft || 0)
-      const minY = -Math.round(pm.bleedTop || 0)
-      const maxX = Math.round(gridW + (pm.bleedRight || 0) - renderW)
-      const maxY = Math.round(gridH + (pm.bleedBottom || 0) - renderH)
-      finalX = Math.max(minX, Math.min(finalX, maxX))
-      finalY = Math.max(minY, Math.min(finalY, maxY))
+    // Clamp placement.
+    // 2× SVG assets may extend 1 cell outside the canvas (invisible bleed).
+    // Uploaded images always stay inside the visible grid.
+    if (currentMultiplier > 1 && !(asset && asset.isUploaded)) {
+      const bleedLeft = colX?.[1] ?? 0
+      const bleedTop = rowY?.[1] ?? 0
+      const bleedRight = colWidths?.[cols - 1] ?? 0
+      const bleedBottom = rowHeights?.[rows - 1] ?? 0
+      finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
+      finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
     } else {
+      // Default: keep inside visible grid
       finalX = Math.max(0, Math.min(finalX, gridW - renderW))
       finalY = Math.max(0, Math.min(finalY, gridH - renderH))
     }
@@ -2372,8 +2402,9 @@ const onCanvasMouseUp = (event) => {
         // top-left position, not the pointer position (which is typically
         // somewhere inside the tile). Using the pointer can make it feel like
         // snapping is disabled or inconsistent.
-        const snapInputX = currentMultiplier > 1 ? displayX : pointerX
-        const snapInputY = currentMultiplier > 1 ? displayY : pointerY
+        const isUploaded = !!(asset && asset.isUploaded)
+        const snapInputX = currentMultiplier > 1 || isUploaded ? displayX : pointerX
+        const snapInputY = currentMultiplier > 1 || isUploaded ? displayY : pointerY
 
         snapAnchor = computeSnapFromPointer(
           snapInputX,
@@ -2381,12 +2412,12 @@ const onCanvasMouseUp = (event) => {
           canvasRectNow.width,
           canvasRectNow.height,
           currentMultiplier,
+          { forceIntersection: isUploaded },
         )
       }
 
       // Use the same remainder-distributed grid metrics used by overlay/drop.
-      // For 2× assets, use placementMetrics (allows 1-cell bleed outside).
-      const metrics = currentMultiplier > 1 ? placementMetrics.value : gridMetrics.value
+      const metrics = gridMetrics.value
       const colX = metrics?.colX || []
       const rowY = metrics?.rowY || []
       const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasRectNow.width
@@ -2395,8 +2426,12 @@ const onCanvasMouseUp = (event) => {
       // Treat snapAnchor differently for assets sized 1x: align to the
       // containing cell top-left so the 1x asset occupies a single cell.
       let snappedTopLeftX, snappedTopLeftY
-      if (currentMultiplier === 1) {
-        // Center the 1x asset in its target cell.
+      if (asset && asset.isUploaded) {
+        // Uploaded images always snap TOP-LEFT to intersections (corners).
+        snappedTopLeftX = snapAnchor.x
+        snappedTopLeftY = snapAnchor.y
+      } else if (currentMultiplier === 1) {
+        // Center the 1x SVG asset in its target cell.
         snappedTopLeftX = snapAnchor.x - currentAssetSize / 2
         snappedTopLeftY = snapAnchor.y - currentAssetSize / 2
       } else {
@@ -2407,14 +2442,8 @@ const onCanvasMouseUp = (event) => {
 
         // Clamp to the effective grid bounds so the asset stays within grid area.
         // Snap intersections include the final boundary, so we clamp by the span.
-        // With 1-cell bleed, intersections run from [-1..cols] so top-left
-        // can be at -1 (index 0 in placementMetrics prefix arrays).
-        const maxCol =
-          currentMultiplier > 1
-            ? gridColumns.value
-            : Math.max(0, gridColumns.value - currentMultiplier)
-        const maxRow =
-          currentMultiplier > 1 ? gridRows.value : Math.max(0, gridRows.value - currentMultiplier)
+        const maxCol = Math.max(0, gridColumns.value - currentMultiplier)
+        const maxRow = Math.max(0, gridRows.value - currentMultiplier)
         let col = 0
         let row = 0
         if (colX.length) {
@@ -2484,47 +2513,45 @@ const onCanvasMouseUp = (event) => {
       finalY = Math.round(displayY)
     }
 
-    // Clamp final placement.
-    // - Uploaded images: keep existing behavior (at least 1px visible).
-    // - 2× SVG: allow 1-cell bleed outside (fully optional — clipped by canvas).
-    // - 1× SVG: keep fully inside the visible grid.
+    // Clamp the final position.
+    // - Uploaded images: keep existing "partially outside" behavior.
+    // - SVG 1×: stay inside visible grid.
+    // - SVG 2×: allow exactly one grid cell of invisible bleed outside the canvas.
     const canvasRect = canvasRef.value.getBoundingClientRect()
     const canvasWidth = canvasRect.width
     const canvasHeight = canvasRect.height
-    const r = getAssetPixelRect(asset)
-    const renderW =
-      asset && asset.isUploaded
-        ? Math.round(asset.renderW || r.w || currentAssetSize)
-        : Math.round(r.w || currentAssetSize)
-    const renderH =
-      asset && asset.isUploaded
-        ? Math.round(asset.renderH || r.h || currentAssetSize)
-        : Math.round(r.h || currentAssetSize)
 
     if (asset && asset.isUploaded) {
+      // Keep at least 1px visible so the user can't lose it completely.
+      const renderW = Math.round(asset.renderW || currentAssetSize)
+      const renderH = Math.round(asset.renderH || currentAssetSize)
       const minX = -Math.floor(renderW) + 1
       const minY = -Math.floor(renderH) + 1
       const maxX = Math.max(1, canvasWidth - 1)
       const maxY = Math.max(1, canvasHeight - 1)
       finalX = Math.max(minX, Math.min(finalX, maxX))
       finalY = Math.max(minY, Math.min(finalY, maxY))
-    } else if ((asset.multiplier || 1) > 1) {
-      const pm = placementMetrics.value
-      const minX = -Math.round(pm.bleedLeft || 0)
-      const minY = -Math.round(pm.bleedTop || 0)
-      const maxX = Math.round(
-        (gridMetrics.value?.gridW || canvasWidth) + (pm.bleedRight || 0) - renderW,
-      )
-      const maxY = Math.round(
-        (gridMetrics.value?.gridH || canvasHeight) + (pm.bleedBottom || 0) - renderH,
-      )
-      finalX = Math.max(minX, Math.min(finalX, maxX))
-      finalY = Math.max(minY, Math.min(finalY, maxY))
     } else {
-      const gridW = gridMetrics.value?.gridW ?? canvasWidth
-      const gridH = gridMetrics.value?.gridH ?? canvasHeight
-      finalX = Math.max(0, Math.min(finalX, Math.round(gridW - renderW)))
-      finalY = Math.max(0, Math.min(finalY, Math.round(gridH - renderH)))
+      const mult = Number(asset?.multiplier || assetMultiplier.value || 1) || 1
+      const metrics = gridMetrics.value
+      const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasWidth
+      const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasHeight
+
+      const rect = getAssetPixelRect(asset)
+      const renderW = Math.round(rect.w || currentAssetSize)
+      const renderH = Math.round(rect.h || currentAssetSize)
+
+      if (mult > 1) {
+        const bleedLeft = metrics?.colX?.[1] ?? 0
+        const bleedTop = metrics?.rowY?.[1] ?? 0
+        const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+        const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+        finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
+        finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
+      } else {
+        finalX = Math.max(0, Math.min(finalX, gridW - renderW))
+        finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+      }
     }
 
     // record previous state before finalizing the move so undo can revert
@@ -4680,7 +4707,7 @@ const randomizePattern = () => {
             <template v-for="img in backgroundImages" :key="img.id">
               <!-- Pattern finder background SVG: render as a tinted mask so it's always visible -->
               <div
-                v-if="img.renderW && img.renderH && (img.dataUrl || img.path)"
+                v-if="img.renderW && img.renderH && img.isUploadedSvg && (img.dataUrl || img.path)"
                 class="placed-asset-shape pattern-bg-wrapper"
                 draggable="false"
                 :class="{ dragging: draggedPlacedAsset && draggedPlacedAsset.id === img.id }"
@@ -4732,8 +4759,8 @@ const randomizePattern = () => {
                 :style="{
                   left: (img.x || 0) + 'px',
                   top: (img.y || 0) + 'px',
-                  width: getAssetPixelSize(img) + 'px',
-                  height: 'auto',
+                  width: (img.renderW || getAssetPixelSize(img)) + 'px',
+                  height: (img.renderH || 'auto') + (img.renderH ? 'px' : ''),
                   transform: `rotate(${img.rotation || 0}deg)`,
                   transformOrigin: 'center center',
                   objectFit: 'contain',
