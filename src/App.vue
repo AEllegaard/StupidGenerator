@@ -1079,6 +1079,19 @@ const gridStyle = computed(() => {
   }
 })
 
+// The grid overlay is centered via a translate(). The actual placed SVG assets
+// live in a different layer, so we must apply the same translate there;
+// otherwise items align left/right but miss top/bottom by the offset.
+const assetsLayerStyle = computed(() => {
+  const { gridW, gridH, totalW, totalH, remW, remH } = gridMetrics.value
+  const offsetX = Math.floor((remW || Math.max(0, (totalW || 0) - (gridW || 0))) / 2)
+  const offsetY = Math.floor((remH || Math.max(0, (totalH || 0) - (gridH || 0))) / 2)
+  return {
+    transform: `translate(${offsetX}px, ${offsetY}px)`,
+    transformOrigin: 'top left',
+  }
+})
+
 const gridCells = computed(() => {
   return Array.from({ length: gridColumns.value * gridRows.value }, (_, i) => i)
 })
@@ -1237,7 +1250,24 @@ const onDrop = (event) => {
   const canvasRect = canvasRef.value.getBoundingClientRect()
   const canvasWidth = canvasRect.width
   const canvasHeight = canvasRect.height
-  const { cols, rows, colX, rowY, colWidths, rowHeights, gridW, gridH } = gridMetrics.value
+  const {
+    cols,
+    rows,
+    colX,
+    rowY,
+    colWidths,
+    rowHeights,
+    gridW,
+    gridH,
+    totalW,
+    totalH,
+    remW,
+    remH,
+  } = gridMetrics.value
+
+  // Grid may be centered (uniform cells). Keep clamps in the same coordinate system.
+  const gridOffsetX = Math.floor((remW || Math.max(0, (totalW || 0) - (gridW || 0))) / 2)
+  const gridOffsetY = Math.floor((remH || Math.max(0, (totalH || 0) - (gridH || 0))) / 2)
 
   // Get drop position relative to canvas
   const x = event.clientX - canvasRect.left
@@ -1269,6 +1299,11 @@ const onDrop = (event) => {
   const snappedX = snapAnchor.x
   const snappedY = snapAnchor.y
 
+  // snapAnchor is returned in CANVAS coords, while colX/rowY are GRID-LOCAL.
+  // Convert to grid-local for index lookups.
+  const snappedXLocal = snappedX - gridOffsetX
+  const snappedYLocal = snappedY - gridOffsetY
+
   // Helpers to map from a snapped coordinate to the underlying cell index.
   const findCellIndex = (prefix, v) => {
     let lo = 0
@@ -1283,18 +1318,18 @@ const onDrop = (event) => {
   }
 
   // Determine which grid cell the 1× asset is centered in.
-  const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedX)))
-  const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedY)))
+  const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedXLocal)))
+  const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedYLocal)))
 
   // For 2× assets, snappedX/Y are intersections. Choose the top-left cell
   // for the 2× block (clamped so the 2× block stays on the grid).
   const tlCol = Math.max(
     0,
-    Math.min(cols - 2, findCellIndex(colX, snappedX) - (snappedX === colX[cols] ? 1 : 0)),
+    Math.min(cols - 2, findCellIndex(colX, snappedXLocal) - (snappedXLocal === colX[cols] ? 1 : 0)),
   )
   const tlRow = Math.max(
     0,
-    Math.min(rows - 2, findCellIndex(rowY, snappedY) - (snappedY === rowY[rows] ? 1 : 0)),
+    Math.min(rows - 2, findCellIndex(rowY, snappedYLocal) - (snappedYLocal === rowY[rows] ? 1 : 0)),
   )
 
   const spanW = (fromCol, span) => {
@@ -1326,11 +1361,11 @@ const onDrop = (event) => {
     dragged && dragged.isUploaded ? Math.max(1, Math.round(forcedCurrentMultiplier || 1)) : 1
   const imgCol =
     dragged && dragged.isUploaded
-      ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedX)))
+      ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snappedXLocal)))
       : 0
   const imgRow =
     dragged && dragged.isUploaded
-      ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedY)))
+      ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snappedYLocal)))
       : 0
   const imgRenderW =
     dragged && dragged.isUploaded
@@ -1392,12 +1427,20 @@ const onDrop = (event) => {
     const bleedTop = rowY?.[1] ?? 0
     const bleedRight = colWidths?.[cols - 1] ?? 0
     const bleedBottom = rowHeights?.[rows - 1] ?? 0
-    finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
-    finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
+    const minX = gridOffsetX - bleedLeft
+    const minY = gridOffsetY - bleedTop
+    const maxX = gridOffsetX + gridW + bleedRight - renderW
+    const maxY = gridOffsetY + gridH + bleedBottom - renderH
+    finalX = Math.max(minX, Math.min(finalX, maxX))
+    finalY = Math.max(minY, Math.min(finalY, maxY))
   } else {
     // Default (previous) clamping: inside the visible grid.
-    finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-    finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+    const minX = gridOffsetX
+    const minY = gridOffsetY
+    const maxX = gridOffsetX + gridW - renderW
+    const maxY = gridOffsetY + gridH - renderH
+    finalX = Math.max(minX, Math.min(finalX, maxX))
+    finalY = Math.max(minY, Math.min(finalY, maxY))
   }
 
   // snap calculations executed
@@ -1473,7 +1516,27 @@ const spawnAssetCentered = (asset) => {
     )
 
     // Use the shared grid metrics so sizes match overlay + snapping.
-    const { cols, rows, colX, rowY, colWidths, rowHeights, gridW, gridH } = gridMetrics.value
+    const {
+      cols,
+      rows,
+      colX,
+      rowY,
+      colWidths,
+      rowHeights,
+      gridW,
+      gridH,
+      totalW,
+      totalH,
+      remW,
+      remH,
+    } = gridMetrics.value
+
+    // Grid is visually centered; most grid arrays are grid-local, while snapAnchor
+    // is returned in canvas coords. Convert to grid-local for index lookup.
+    const gridOffsetX = Math.floor((remW || Math.max(0, (totalW || 0) - (gridW || 0))) / 2)
+    const gridOffsetY = Math.floor((remH || Math.max(0, (totalH || 0) - (gridH || 0))) / 2)
+    const snapXLocal = (snapAnchor?.x ?? 0) - gridOffsetX
+    const snapYLocal = (snapAnchor?.y ?? 0) - gridOffsetY
     const findCellIndex = (prefix, v) => {
       let lo = 0
       let hi = prefix.length - 2
@@ -1486,10 +1549,10 @@ const spawnAssetCentered = (asset) => {
       return Math.max(0, Math.min(prefix.length - 2, lo))
     }
 
-    const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapAnchor.x)))
-    const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapAnchor.y)))
-    const tlCol = Math.max(0, Math.min(cols - 2, findCellIndex(colX, snapAnchor.x)))
-    const tlRow = Math.max(0, Math.min(rows - 2, findCellIndex(rowY, snapAnchor.y)))
+    const cellCol = Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapXLocal)))
+    const cellRow = Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapYLocal)))
+    const tlCol = Math.max(0, Math.min(cols - 2, findCellIndex(colX, snapXLocal)))
+    const tlRow = Math.max(0, Math.min(rows - 2, findCellIndex(rowY, snapYLocal)))
 
     const spanW = (fromCol, span) => {
       let w = 0
@@ -1518,11 +1581,11 @@ const spawnAssetCentered = (asset) => {
     const imgSpan = asset && asset.isUploaded ? Math.max(1, Math.round(currentMultiplier || 1)) : 1
     const imgCol =
       asset && asset.isUploaded
-        ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapAnchor.x)))
+        ? Math.max(0, Math.min(cols - 1, findCellIndex(colX, snapXLocal)))
         : 0
     const imgRow =
       asset && asset.isUploaded
-        ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapAnchor.y)))
+        ? Math.max(0, Math.min(rows - 1, findCellIndex(rowY, snapYLocal)))
         : 0
     const imgRenderW =
       asset && asset.isUploaded
@@ -1567,12 +1630,16 @@ const spawnAssetCentered = (asset) => {
       const bleedTop = rowY?.[1] ?? 0
       const bleedRight = colWidths?.[cols - 1] ?? 0
       const bleedBottom = rowHeights?.[rows - 1] ?? 0
-      finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
-      finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
+      const minX = gridOffsetX - bleedLeft
+      const minY = gridOffsetY - bleedTop
+      const maxX = gridOffsetX + gridW + bleedRight - renderW
+      const maxY = gridOffsetY + gridH + bleedBottom - renderH
+      finalX = Math.max(minX, Math.min(finalX, maxX))
+      finalY = Math.max(minY, Math.min(finalY, maxY))
     } else {
       // Default: keep inside visible grid
-      finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-      finalY = Math.max(0, Math.min(finalY, gridH - renderH))
+      finalX = Math.max(gridOffsetX, Math.min(finalX, gridOffsetX + gridW - renderW))
+      finalY = Math.max(gridOffsetY, Math.min(finalY, gridOffsetY + gridH - renderH))
     }
 
     pushHistory()
@@ -2185,17 +2252,35 @@ const onCanvasMouseMove = (event) => {
   const py = rawY + dragOffset.value.y
   const dragMult = draggedPlacedAsset.value?.multiplier || 1
   const isUploaded = !!draggedPlacedAsset.value?.isUploaded
-  const snapAnchor = computeSnapFromPointer(px, py, canvasWidth, canvasHeight, dragMult, {
-    forceIntersection: isUploaded,
-    allowBleed: isUploaded,
-  })
-  const snappedX = snapAnchor.x
-  const snappedY = snapAnchor.y
+
+  const metrics = gridMetrics.value
+  const gridWLocal = metrics?.gridW ?? canvasWidth
+  const gridHLocal = metrics?.gridH ?? canvasHeight
+  const totalWLocal = Number(metrics?.totalW || canvasWidth) || canvasWidth
+  const totalHLocal = Number(metrics?.totalH || canvasHeight) || canvasHeight
+  const remWLocal = Number(metrics?.remW || 0) || 0
+  const remHLocal = Number(metrics?.remH || 0) || 0
+  const gridOffsetXLocal = Math.floor((remWLocal || Math.max(0, totalWLocal - gridWLocal)) / 2)
+  const gridOffsetYLocal = Math.floor((remHLocal || Math.max(0, totalHLocal - gridHLocal)) / 2)
+
+  // computeSnapFromPointer expects CANVAS coords. For SVGs we store grid-local coords,
+  // so we add the gridOffset when snapping.
+  const snapAnchor = computeSnapFromPointer(
+    isUploaded ? px : px + gridOffsetXLocal,
+    isUploaded ? py : py + gridOffsetYLocal,
+    canvasWidth,
+    canvasHeight,
+    dragMult,
+    { forceIntersection: isUploaded, allowBleed: isUploaded },
+  )
+
+  // Store snap anchor in the asset's coordinate system
+  const snappedX = isUploaded ? snapAnchor.x : snapAnchor.x - gridOffsetXLocal
+  const snappedY = isUploaded ? snapAnchor.y : snapAnchor.y - gridOffsetYLocal
 
   // Store snapped anchor for drop-time application.
   // For uploads (and 2×+ SVGs), allow 1-cell bleed in every direction.
   // For 1× SVGs, clamp to visible grid only.
-  const metrics = gridMetrics.value
   const gridW = metrics?.gridW ?? canvasWidth
   const gridH = metrics?.gridH ?? canvasHeight
   const bleedLeft = metrics?.colX?.[1] ?? 0
@@ -2232,6 +2317,64 @@ const onCanvasMouseMove = (event) => {
   // Round display position (do NOT clamp here so the asset can be dragged outside the canvas)
   displayX = Math.round(displayX)
   displayY = Math.round(displayY)
+
+  // Allow dragging 1 cell outside the canvas in every direction.
+  // Random placement already allows this; live dragging must clamp to the same
+  // bounds so you can actually pull items into the bleed zone.
+  {
+    const metrics = gridMetrics.value
+    const gridW = metrics?.gridW ?? canvasWidth
+    const gridH = metrics?.gridH ?? canvasHeight
+
+    const bleedLeft = metrics?.colX?.[1] ?? 0
+    const bleedTop = metrics?.rowY?.[1] ?? 0
+    const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+    const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+
+    const totalW = Number(metrics?.totalW || canvasWidth) || canvasWidth
+    const totalH = Number(metrics?.totalH || canvasHeight) || canvasHeight
+    const remW = Number(metrics?.remW || 0) || 0
+    const remH = Number(metrics?.remH || 0) || 0
+    const gridOffsetX = Math.floor((remW || Math.max(0, totalW - gridW)) / 2)
+    const gridOffsetY = Math.floor((remH || Math.max(0, totalH - gridH)) / 2)
+
+    const isUploadedNow = !!draggedPlacedAsset.value?.isUploaded
+    const rect = isUploadedNow
+      ? {
+          w:
+            Number(draggedPlacedAsset.value?.renderW || currentDraggingAssetSize) ||
+            currentDraggingAssetSize,
+          h:
+            Number(draggedPlacedAsset.value?.renderH || currentDraggingAssetSize) ||
+            currentDraggingAssetSize,
+        }
+      : getAssetPixelRect(draggedPlacedAsset.value)
+    const w = Math.round(rect.w || currentDraggingAssetSize)
+    const h = Math.round(rect.h || currentDraggingAssetSize)
+
+    if (isUploadedNow) {
+      // uploads are stored in canvas coords
+      const minX = -bleedLeft
+      const minY = -bleedTop
+      const maxX = gridW + bleedRight - w
+      const maxY = gridH + bleedBottom - h
+      displayX = Math.max(minX, Math.min(displayX, maxX))
+      displayY = Math.max(minY, Math.min(displayY, maxY))
+    } else {
+      // SVG assets are stored in grid-local coords; convert from canvas coords
+      // before clamping, then store back in local coords.
+      const localX = displayX - gridOffsetX
+      const localY = displayY - gridOffsetY
+      const minX = -bleedLeft
+      const minY = -bleedTop
+      const maxX = gridW + bleedRight - w
+      const maxY = gridH + bleedBottom - h
+      const clampedLocalX = Math.max(minX, Math.min(localX, maxX))
+      const clampedLocalY = Math.max(minY, Math.min(localY, maxY))
+      displayX = clampedLocalX
+      displayY = clampedLocalY
+    }
+  }
 
   draggedPlacedAsset.value.x = displayX
   draggedPlacedAsset.value.y = displayY
@@ -2409,6 +2552,15 @@ const onCanvasMouseUp = (event) => {
       // cursor is slightly outside the canvas during drop.
       if (pointerX !== null && pointerY !== null) {
         const metrics = gridMetrics.value
+        const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasRectNow.width
+        const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasRectNow.height
+        const totalW = Number(metrics?.totalW || canvasRectNow.width) || canvasRectNow.width
+        const totalH = Number(metrics?.totalH || canvasRectNow.height) || canvasRectNow.height
+        const remW = Number(metrics?.remW || 0) || 0
+        const remH = Number(metrics?.remH || 0) || 0
+        const gridOffsetX = Math.floor((remW || Math.max(0, totalW - gridW)) / 2)
+        const gridOffsetY = Math.floor((remH || Math.max(0, totalH - gridH)) / 2)
+
         const bleedLeft = metrics?.colX?.[1] ?? 0
         const bleedTop = metrics?.rowY?.[1] ?? 0
         const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
@@ -2416,15 +2568,21 @@ const onCanvasMouseUp = (event) => {
 
         const isUploaded = !!(asset && asset.isUploaded)
         const currentMultiplier = asset.multiplier || assetMultiplier.value || 1
-        const allowBleed = isUploaded || currentMultiplier > 1
+        const allowBleed = true // per request: everything can go 1 cell outside all around
 
-        const minX = allowBleed ? -bleedLeft : 0
-        const minY = allowBleed ? -bleedTop : 0
-        const maxX = allowBleed ? canvasRectNow.width + bleedRight : canvasRectNow.width
-        const maxY = allowBleed ? canvasRectNow.height + bleedBottom : canvasRectNow.height
+        // Clamp pointer in the coordinate space used for snapping.
+        // - uploads snap in canvas coords
+        // - SVG assets snap in canvas coords but their model coords are local
+        const pxSpace = isUploaded ? pointerX : pointerX
+        const pySpace = isUploaded ? pointerY : pointerY
 
-        pointerX = Math.max(minX, Math.min(pointerX, maxX))
-        pointerY = Math.max(minY, Math.min(pointerY, maxY))
+        const minX = allowBleed ? gridOffsetX - bleedLeft : gridOffsetX
+        const minY = allowBleed ? gridOffsetY - bleedTop : gridOffsetY
+        const maxX = allowBleed ? gridOffsetX + gridW + bleedRight : gridOffsetX + gridW
+        const maxY = allowBleed ? gridOffsetY + gridH + bleedBottom : gridOffsetY + gridH
+
+        pointerX = Math.max(minX, Math.min(pxSpace, maxX))
+        pointerY = Math.max(minY, Math.min(pySpace, maxY))
       }
 
       let snapAnchor = lastSnap.value
@@ -2435,8 +2593,23 @@ const onCanvasMouseUp = (event) => {
         // somewhere inside the tile). Using the pointer can make it feel like
         // snapping is disabled or inconsistent.
         const isUploaded = !!(asset && asset.isUploaded)
-        const snapInputX = currentMultiplier > 1 || isUploaded ? displayX : pointerX
-        const snapInputY = currentMultiplier > 1 || isUploaded ? displayY : pointerY
+
+        // Convert local SVG coordinates -> canvas coordinates for snapping.
+        const metrics = gridMetrics.value
+        const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasRectNow.width
+        const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasRectNow.height
+        const totalW = Number(metrics?.totalW || canvasRectNow.width) || canvasRectNow.width
+        const totalH = Number(metrics?.totalH || canvasRectNow.height) || canvasRectNow.height
+        const remW = Number(metrics?.remW || 0) || 0
+        const remH = Number(metrics?.remH || 0) || 0
+        const gridOffsetX = Math.floor((remW || Math.max(0, totalW - gridW)) / 2)
+        const gridOffsetY = Math.floor((remH || Math.max(0, totalH - gridH)) / 2)
+
+        const displayXCanvas = isUploaded ? displayX : displayX + gridOffsetX
+        const displayYCanvas = isUploaded ? displayY : displayY + gridOffsetY
+
+        const snapInputX = currentMultiplier > 1 || isUploaded ? displayXCanvas : pointerX
+        const snapInputY = currentMultiplier > 1 || isUploaded ? displayYCanvas : pointerY
 
         snapAnchor = computeSnapFromPointer(
           snapInputX,
@@ -2444,8 +2617,13 @@ const onCanvasMouseUp = (event) => {
           canvasRectNow.width,
           canvasRectNow.height,
           currentMultiplier,
-          { forceIntersection: isUploaded, allowBleed: isUploaded },
+          { forceIntersection: isUploaded, allowBleed: true },
         )
+
+        // Convert snapAnchor back to the asset coordinate system.
+        if (!isUploaded) {
+          snapAnchor = { x: snapAnchor.x - gridOffsetX, y: snapAnchor.y - gridOffsetY }
+        }
       }
 
       // Use the same remainder-distributed grid metrics used by overlay/drop.
@@ -2509,6 +2687,28 @@ const onCanvasMouseUp = (event) => {
         snappedTopLeftX = colX[col] ?? Math.max(0, Math.min(snappedTopLeftX, gridW))
         snappedTopLeftY = rowY[row] ?? Math.max(0, Math.min(snappedTopLeftY, gridH))
       }
+
+      // If the user releases the asset in the bleed zone, keep it there.
+      // computeSnapFromPointer clamps intersections to the grid, so without
+      // this we'd snap back inside and the whole asset ends up visible.
+      // We treat ANY asset the same (uploads + SVG, 1x + 2x).
+      {
+        const bleedLeft = metrics?.colX?.[1] ?? 0
+        const bleedTop = metrics?.rowY?.[1] ?? 0
+        const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+        const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+
+        const minX = -bleedLeft
+        const minY = -bleedTop
+        const maxX = gridW + bleedRight
+        const maxY = gridH + bleedBottom
+
+        if (displayX < 0) snappedTopLeftX = minX
+        else if (displayX > gridW) snappedTopLeftX = maxX
+
+        if (displayY < 0) snappedTopLeftY = minY
+        else if (displayY > gridH) snappedTopLeftY = maxY
+      }
       const candidateX = snappedTopLeftX + dropOffsetX
       const candidateY = snappedTopLeftY + dropOffsetY
 
@@ -2570,11 +2770,14 @@ const onCanvasMouseUp = (event) => {
 
     {
       const isUploaded = !!(asset && asset.isUploaded)
-      const mult = Number(asset?.multiplier || assetMultiplier.value || 1) || 1
-
       const metrics = gridMetrics.value
       const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasWidth
       const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasHeight
+
+      const bleedLeft = metrics?.colX?.[1] ?? 0
+      const bleedTop = metrics?.rowY?.[1] ?? 0
+      const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+      const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
 
       const rect = isUploaded
         ? {
@@ -2585,21 +2788,17 @@ const onCanvasMouseUp = (event) => {
       const renderW = Math.round(rect.w || currentAssetSize)
       const renderH = Math.round(rect.h || currentAssetSize)
 
-      // Allow exactly 1 grid cell of invisible bleed outside the canvas.
-      // - Uploaded images: all sizes (1–4)
-      // - SVG assets: only 2×+
-      const allowBleed = isUploaded || mult > 1
-      if (allowBleed) {
-        const bleedLeft = metrics?.colX?.[1] ?? 0
-        const bleedTop = metrics?.rowY?.[1] ?? 0
-        const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
-        const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
-        finalX = Math.max(-bleedLeft, Math.min(finalX, gridW + bleedRight - renderW))
-        finalY = Math.max(-bleedTop, Math.min(finalY, gridH + bleedBottom - renderH))
-      } else {
-        finalX = Math.max(0, Math.min(finalX, gridW - renderW))
-        finalY = Math.max(0, Math.min(finalY, gridH - renderH))
-      }
+      // Per request: EVERYTHING can go 1 cell outside canvas all the way around.
+      // We clamp in the asset's coordinate system:
+      // - uploads are stored in canvas coords
+      // - SVG assets are stored in grid-local coords
+      const minX = -bleedLeft
+      const minY = -bleedTop
+      const maxX = gridW + bleedRight - renderW
+      const maxY = gridH + bleedBottom - renderH
+
+      finalX = Math.max(minX, Math.min(finalX, maxX))
+      finalY = Math.max(minY, Math.min(finalY, maxY))
     }
 
     // record previous state before finalizing the move so undo can revert
@@ -4824,6 +5023,7 @@ const randomizePattern = () => {
           <!-- Placed assets layer (SVG assets only) -->
           <div
             class="assets-layer"
+            :style="assetsLayerStyle"
             @pointerdown="onAssetsLayerPointerDown($event)"
             @dragover.stop.prevent="onOverlayDragOver"
             @drop.stop.prevent="onOverlayDrop"
