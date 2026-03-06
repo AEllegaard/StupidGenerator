@@ -1146,11 +1146,12 @@ const computeSnapFromPointer = (
   const { cols, rows, colX, rowY, gridW, gridH } = gridMetrics.value
 
   const forceIntersection = !!opts.forceIntersection
+  const allowBleedOpt = !!opts.allowBleed
 
   // Optional invisible "bleed" margin around the canvas.
-  // This lets 2× SVG assets sit 1 grid cell outside the visible canvas (they'll be clipped).
-  // Uploaded images: keep inside the visible grid.
-  const allowBleed = (multiplier || 1) > 1 && !forceIntersection
+  // This lets items sit 1 grid cell outside the visible canvas (they'll be clipped).
+  // Default: only 2×+ SVG assets. For uploads we can opt-in via opts.allowBleed.
+  const allowBleed = allowBleedOpt || ((multiplier || 1) > 1 && !forceIntersection)
   const bleedCols = allowBleed ? 1 : 0
   const bleedRows = allowBleed ? 1 : 0
   const bleedLeft = bleedCols ? (colX?.[1] ?? 0) : 0
@@ -1301,6 +1302,7 @@ const onDrop = (event) => {
     forcedCurrentMultiplier,
     {
       forceIntersection: !!(dragged && dragged.isUploaded),
+      allowBleed: !!(dragged && dragged.isUploaded),
     },
   )
   const snappedX = snapAnchor.x
@@ -1419,9 +1421,12 @@ const onDrop = (event) => {
   finalX = Math.round(finalX)
   finalY = Math.round(finalY)
   // Clamp for placement.
-  // 1× assets must stay fully inside the visible grid.
-  // 2× assets may extend 1 cell outside the canvas in any direction (invisible bleed).
-  if (forcedCurrentMultiplier > 1 && !(dragged && dragged.isUploaded)) {
+  // 2× SVG assets may extend 1 cell outside the canvas.
+  // Uploaded images (all sizes) may extend 1 cell outside the canvas.
+  if (
+    (forcedCurrentMultiplier > 1 && !(dragged && dragged.isUploaded)) ||
+    (dragged && dragged.isUploaded)
+  ) {
     const bleedLeft = colX?.[1] ?? 0
     const bleedTop = rowY?.[1] ?? 0
     const bleedRight = colWidths?.[cols - 1] ?? 0
@@ -1502,6 +1507,7 @@ const spawnAssetCentered = (asset) => {
       currentMultiplier,
       {
         forceIntersection: !!(asset && asset.isUploaded),
+        allowBleed: !!(asset && asset.isUploaded),
       },
     )
 
@@ -1594,8 +1600,8 @@ const spawnAssetCentered = (asset) => {
 
     // Clamp placement.
     // 2× SVG assets may extend 1 cell outside the canvas (invisible bleed).
-    // Uploaded images always stay inside the visible grid.
-    if (currentMultiplier > 1 && !(asset && asset.isUploaded)) {
+    // Uploaded images (all sizes) may extend 1 cell outside the canvas.
+    if ((currentMultiplier > 1 && !(asset && asset.isUploaded)) || (asset && asset.isUploaded)) {
       const bleedLeft = colX?.[1] ?? 0
       const bleedTop = rowY?.[1] ?? 0
       const bleedRight = colWidths?.[cols - 1] ?? 0
@@ -2217,17 +2223,31 @@ const onCanvasMouseMove = (event) => {
   const px = rawX + dragOffset.value.x
   const py = rawY + dragOffset.value.y
   const dragMult = draggedPlacedAsset.value?.multiplier || 1
-  const snapAnchor = computeSnapFromPointer(px, py, canvasWidth, canvasHeight, dragMult)
+  const isUploaded = !!draggedPlacedAsset.value?.isUploaded
+  const snapAnchor = computeSnapFromPointer(px, py, canvasWidth, canvasHeight, dragMult, {
+    forceIntersection: isUploaded,
+    allowBleed: isUploaded,
+  })
   const snappedX = snapAnchor.x
   const snappedY = snapAnchor.y
 
-  // Store snapped anchor for drop-time application
-  // Clamp snapped anchor to canvas bounds so out-of-canvas pointers don't
-  // produce anchors outside the visible grid (helps when dragging slightly
-  // outside the canvas to the left/top/right/bottom).
-  const { gridW, gridH } = gridMetrics.value
-  const clampedSnappedX = Math.max(0, Math.min(snappedX, gridW))
-  const clampedSnappedY = Math.max(0, Math.min(snappedY, gridH))
+  // Store snapped anchor for drop-time application.
+  // For uploads (and 2×+ SVGs), allow 1-cell bleed in every direction.
+  // For 1× SVGs, clamp to visible grid only.
+  const metrics = gridMetrics.value
+  const gridW = metrics?.gridW ?? canvasWidth
+  const gridH = metrics?.gridH ?? canvasHeight
+  const bleedLeft = metrics?.colX?.[1] ?? 0
+  const bleedTop = metrics?.rowY?.[1] ?? 0
+  const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+  const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+  const allowBleed = isUploaded || (dragMult || 1) > 1
+  const minX = allowBleed ? -bleedLeft : 0
+  const minY = allowBleed ? -bleedTop : 0
+  const maxX = allowBleed ? gridW + bleedRight : gridW
+  const maxY = allowBleed ? gridH + bleedBottom : gridH
+  const clampedSnappedX = Math.max(minX, Math.min(snappedX, maxX))
+  const clampedSnappedY = Math.max(minY, Math.min(snappedY, maxY))
   lastSnap.value = { x: clampedSnappedX, y: clampedSnappedY }
 
   // Determine this asset's effective size (compute from multiplier so it
@@ -2427,8 +2447,23 @@ const onCanvasMouseUp = (event) => {
       // accidentally snap to negative or out-of-range anchors when the
       // cursor is slightly outside the canvas during drop.
       if (pointerX !== null && pointerY !== null) {
-        pointerX = Math.max(0, Math.min(pointerX, canvasRectNow.width))
-        pointerY = Math.max(0, Math.min(pointerY, canvasRectNow.height))
+        const metrics = gridMetrics.value
+        const bleedLeft = metrics?.colX?.[1] ?? 0
+        const bleedTop = metrics?.rowY?.[1] ?? 0
+        const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+        const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+
+        const isUploaded = !!(asset && asset.isUploaded)
+        const currentMultiplier = asset.multiplier || assetMultiplier.value || 1
+        const allowBleed = isUploaded || currentMultiplier > 1
+
+        const minX = allowBleed ? -bleedLeft : 0
+        const minY = allowBleed ? -bleedTop : 0
+        const maxX = allowBleed ? canvasRectNow.width + bleedRight : canvasRectNow.width
+        const maxY = allowBleed ? canvasRectNow.height + bleedBottom : canvasRectNow.height
+
+        pointerX = Math.max(minX, Math.min(pointerX, maxX))
+        pointerY = Math.max(minY, Math.min(pointerY, maxY))
       }
 
       let snapAnchor = lastSnap.value
@@ -2448,7 +2483,7 @@ const onCanvasMouseUp = (event) => {
           canvasRectNow.width,
           canvasRectNow.height,
           currentMultiplier,
-          { forceIntersection: isUploaded },
+          { forceIntersection: isUploaded, allowBleed: isUploaded },
         )
       }
 
@@ -2463,9 +2498,24 @@ const onCanvasMouseUp = (event) => {
       // containing cell top-left so the 1x asset occupies a single cell.
       let snappedTopLeftX, snappedTopLeftY
       if (asset && asset.isUploaded) {
-        // Uploaded images always snap TOP-LEFT to intersections (corners).
-        snappedTopLeftX = snapAnchor.x
-        snappedTopLeftY = snapAnchor.y
+        // Uploaded images always snap TOP-LEFT to intersections (corners),
+        // but they must also be able to sit 1 cell outside the canvas.
+        // computeSnapFromPointer only returns in-grid intersections (0..gridW/gridH),
+        // so we add a bleed-aware snap here.
+        const bleedLeft = metrics?.colX?.[1] ?? 0
+        const bleedTop = metrics?.rowY?.[1] ?? 0
+        const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
+        const bleedBottom = metrics?.rowHeights?.[metrics?.rows - 1] ?? 0
+
+        const minX = -bleedLeft
+        const minY = -bleedTop
+        const maxX = gridW + bleedRight
+        const maxY = gridH + bleedBottom
+
+        // If the final dragged position is in the bleed zone, snap to the
+        // outer bleed boundary; otherwise snap to the normal in-grid intersection.
+        snappedTopLeftX = displayX < 0 ? minX : displayX > gridW ? maxX : snapAnchor.x
+        snappedTopLeftY = displayY < 0 ? minY : displayY > gridH ? maxY : snapAnchor.y
       } else if (currentMultiplier === 1) {
         // Center the 1x SVG asset in its target cell.
         snappedTopLeftX = snapAnchor.x - currentAssetSize / 2
@@ -2557,27 +2607,28 @@ const onCanvasMouseUp = (event) => {
     const canvasWidth = canvasRect.width
     const canvasHeight = canvasRect.height
 
-    if (asset && asset.isUploaded) {
-      // Keep at least 1px visible so the user can't lose it completely.
-      const renderW = Math.round(asset.renderW || currentAssetSize)
-      const renderH = Math.round(asset.renderH || currentAssetSize)
-      const minX = -Math.floor(renderW) + 1
-      const minY = -Math.floor(renderH) + 1
-      const maxX = Math.max(1, canvasWidth - 1)
-      const maxY = Math.max(1, canvasHeight - 1)
-      finalX = Math.max(minX, Math.min(finalX, maxX))
-      finalY = Math.max(minY, Math.min(finalY, maxY))
-    } else {
+    {
+      const isUploaded = !!(asset && asset.isUploaded)
       const mult = Number(asset?.multiplier || assetMultiplier.value || 1) || 1
+
       const metrics = gridMetrics.value
       const gridW = Number.isFinite(metrics?.gridW) ? metrics.gridW : canvasWidth
       const gridH = Number.isFinite(metrics?.gridH) ? metrics.gridH : canvasHeight
 
-      const rect = getAssetPixelRect(asset)
+      const rect = isUploaded
+        ? {
+            w: Number(asset?.renderW || currentAssetSize) || currentAssetSize,
+            h: Number(asset?.renderH || currentAssetSize) || currentAssetSize,
+          }
+        : getAssetPixelRect(asset)
       const renderW = Math.round(rect.w || currentAssetSize)
       const renderH = Math.round(rect.h || currentAssetSize)
 
-      if (mult > 1) {
+      // Allow exactly 1 grid cell of invisible bleed outside the canvas.
+      // - Uploaded images: all sizes (1–4)
+      // - SVG assets: only 2×+
+      const allowBleed = isUploaded || mult > 1
+      if (allowBleed) {
         const bleedLeft = metrics?.colX?.[1] ?? 0
         const bleedTop = metrics?.rowY?.[1] ?? 0
         const bleedRight = metrics?.colWidths?.[metrics?.cols - 1] ?? 0
