@@ -1935,15 +1935,50 @@ const onAssetsLayerPointerDown = (event) => {
   if (!el) return
   const id = el.dataset && el.dataset.id
   if (!id) return
-  // Selection priority:
-  // - Hold Alt/Option to grab BACKGROUND images (even if assets are on top)
-  // - Otherwise grab regular placed assets as usual
-  const preferBackground = !!event.altKey
+  // Determine which layer was clicked.
+  // - Clicking the background layer should move uploaded images without requiring Alt.
+  // - Clicking the assets layer should move SVG assets.
+  // - Alt/Option still lets you prefer background selection if layers overlap.
+  const onBackgroundLayer = !!(
+    event.currentTarget &&
+    event.currentTarget.classList &&
+    event.currentTarget.classList.contains('background-layer')
+  )
+  // Sandbox requirement: only allow moving uploaded images when holding Alt/Option.
+  // Pattern mode handles backgrounds separately.
+  const allowBgWithoutAlt = editorMode.value === 'pattern'
+  const preferBackground =
+    (onBackgroundLayer && (allowBgWithoutAlt || !!event.altKey)) || !!event.altKey
   const found = preferBackground
     ? backgroundImages.value.find((a) => String(a.id) === String(id))
     : placedAssets.value.find((a) => String(a.id) === String(id)) ||
       backgroundImages.value.find((a) => String(a.id) === String(id))
   if (!found) return
+
+  // Sandbox: Alt/Option should let you drag the topmost background image
+  // under the pointer even if the click target is an asset on top.
+  if (editorMode.value !== 'pattern' && event.altKey) {
+    try {
+      const canvasRect = canvasRef.value?.getBoundingClientRect?.()
+      if (canvasRect) {
+        const x = event.clientX - canvasRect.left
+        const y = event.clientY - canvasRect.top
+        const hit = findTopmostBackgroundImageAt(x, y)
+        if (hit) {
+          const elBg =
+            canvasRef.value?.querySelector?.(`.placed-asset-shape[data-id="${hit.id}"]`) || el
+          startMovingAsset(hit, event, elBg)
+          event.preventDefault()
+          return
+        }
+      }
+    } catch (e) {
+      // ignore and fall back
+    }
+  }
+
+  // In Sandbox (non-pattern), suppress background-image dragging unless Alt is held.
+  if (editorMode.value !== 'pattern' && found && found.isUploaded && !event.altKey) return
 
   // Capture pointer so we keep receiving move events even if the pointer
   // leaves the element/canvas while dragging.
@@ -2004,10 +2039,11 @@ const findTopmostBackgroundImageAt = (canvasX, canvasY) => {
     const w = img.renderW || getAssetPixelSize(img)
     const h = img.renderH || getAssetPixelSize(img)
 
-    // Pattern finder background is centered; treat img.x/img.y as offsets from center
+    // Sandbox uploaded images store x/y as TOP-LEFT.
+    // Pattern background stores x/y as offsets from canvas center.
     let left = img.x || 0
     let top = img.y || 0
-    if (img.renderW && img.renderH) {
+    if (editorMode.value === 'pattern' && img.renderW && img.renderH && !img.isUploaded) {
       try {
         const rect = canvasRef.value.getBoundingClientRect()
         left = rect.width / 2 - img.renderW / 2 + (img.x || 0)
