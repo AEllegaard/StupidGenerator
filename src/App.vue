@@ -629,9 +629,6 @@ const maxRedo = 100
 
 const getSnapshot = () => {
   return {
-    // User uploads (should survive reload)
-    uploadedSvgAssets: JSON.parse(JSON.stringify(uploadedSvgAssets.value || [])),
-    uploadedImages: JSON.parse(JSON.stringify(uploadedImages.value || [])),
     placedAssets: JSON.parse(JSON.stringify(placedAssets.value)),
     backgroundImages: JSON.parse(JSON.stringify(backgroundImages.value)),
     // Pattern finder background may be stashed/removed when switching modes.
@@ -671,25 +668,7 @@ const pushHistory = () => {
 
 const applySnapshot = (snap) => {
   if (!snap) return
-  // Restore uploads first so the palette is preserved across reloads.
-  // (We reset the actual canvas content later.)
-  try {
-    if (Array.isArray(snap.uploadedSvgAssets)) {
-      uploadedSvgAssets.value = JSON.parse(JSON.stringify(snap.uploadedSvgAssets || []))
-    }
-  } catch (e) {
-    // ignore
-  }
-  try {
-    if (Array.isArray(snap.uploadedImages)) {
-      uploadedImages.value = JSON.parse(JSON.stringify(snap.uploadedImages || []))
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  // We restore the snapshot first, then apply our “fresh on reload” defaults
-  // below.
+  // Note: uploads are intentionally NOT restored from snapshot.
   placedAssets.value = JSON.parse(JSON.stringify(snap.placedAssets || []))
   backgroundImages.value = JSON.parse(JSON.stringify(snap.backgroundImages || []))
 
@@ -775,45 +754,11 @@ const redo = () => {
 }
 
 // --- Autosave / Restore (localStorage) ---------------------------------
-// Persists the current working state so it survives reloads / closing the tab.
-const AUTOSAVE_KEY = 'stupidgenerator_autosave_v1'
-const _autosaveRaf = { id: 0, lastStr: '' }
-
-const saveAutosaveNow = () => {
-  try {
-    const snap = getSnapshot()
-    const str = JSON.stringify(snap)
-    if (str === _autosaveRaf.lastStr) return
-    _autosaveRaf.lastStr = str
-    localStorage.setItem(AUTOSAVE_KEY, str)
-  } catch (e) {
-    console.warn('autosave failed', e)
-  }
-}
-
-const scheduleAutosave = () => {
-  try {
-    if (_autosaveRaf.id) cancelAnimationFrame(_autosaveRaf.id)
-  } catch (e) {}
-  _autosaveRaf.id = requestAnimationFrame(() => {
-    _autosaveRaf.id = 0
-    saveAutosaveNow()
-  })
-}
-
-const restoreAutosave = () => {
-  try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY)
-    if (!raw) return false
-    const snap = JSON.parse(raw)
-    if (!snap || typeof snap !== 'object') return false
-    applySnapshot(snap)
-    return true
-  } catch (e) {
-    console.warn('restore autosave failed', e)
-    return false
-  }
-}
+// NOTE: Uploads should NOT be persisted between reloads.
+// We keep these functions as no-ops to avoid touching wiring across the file.
+const saveAutosaveNow = () => {}
+const scheduleAutosave = () => {}
+const restoreAutosave = () => false
 
 // On reload, Sandbox should start fresh (empty canvas), but we keep:
 // - color swatches (handled by loadCustomSwatches)
